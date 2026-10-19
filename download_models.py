@@ -17,6 +17,19 @@ VOSK_URL = f"https://alphacephei.com/vosk/models/{VOSK_NAME}.zip"
 WHISPER_NAME = "whisper-small.en"
 
 
+def download(url):
+    """Fetch url into memory, showing progress."""
+    with urllib.request.urlopen(url) as response:
+        total = int(response.headers.get("Content-Length", 0))
+        data = bytearray()
+        while chunk := response.read(1 << 20):
+            data += chunk
+            if total:
+                print(f"\r  {len(data) / 1e6:.0f} / {total / 1e6:.0f} MB", end="", flush=True)
+        print()
+    return bytes(data)
+
+
 def main():
     MODELS.mkdir(exist_ok=True)
 
@@ -24,8 +37,7 @@ def main():
         print(f"{VOSK_NAME}: already there")
     else:
         print(f"{VOSK_NAME}: downloading (~40 MB)...")
-        with urllib.request.urlopen(VOSK_URL) as response:
-            zipfile.ZipFile(io.BytesIO(response.read())).extractall(MODELS)
+        zipfile.ZipFile(io.BytesIO(download(VOSK_URL))).extractall(MODELS)
 
     if (MODELS / WHISPER_NAME / "model.bin").exists():
         print(f"{WHISPER_NAME}: already there")

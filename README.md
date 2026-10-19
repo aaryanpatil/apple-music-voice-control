@@ -9,21 +9,24 @@ limited to the command words so it's fast; song requests are transcribed with
 
 ## Setup
 
-Needs Windows 10/11, Python 3.13+, and the Apple Music app from the Microsoft Store.
+Needs Windows 10/11, Python 3.10+ (developed on 3.14), and the Apple Music app from
+the Microsoft Store.
+
+Double-click `setup.bat`, or from a PowerShell terminal (VS Code's default) run:
 
 ```
-setup.bat
+.\setup.bat
 ```
 
-This creates `.venv`, installs the libraries from `requirements.txt` and downloads
-the speech models (~520 MB) into `models/`, which aren't in the repo because GitHub
+(PowerShell needs the `.\` to run a script from the current folder.) It shows each
+step and waits for a key press at the end, so you can see whether it worked. It
+creates `.venv`, installs the libraries from `requirements.txt` and downloads the
+speech models (~520 MB) into `models/`, which aren't in the repo because GitHub
 won't store files that large.
 
 ## Run
 
-```
-start.bat
-```
+Double-click `start.bat` (or run `.\start.bat`).
 
 Pick a microphone and, ideally, a wake word (much more reliable while music with
 vocals is playing), then **Start listening**.
