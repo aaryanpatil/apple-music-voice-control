@@ -9,8 +9,9 @@ limited to the command words so it's fast; song requests are transcribed with
 
 ## Setup
 
-Needs Windows 10/11, Python 3.10+ (developed on 3.14), and the Apple Music app from
-the Microsoft Store.
+Needs Windows 10/11 on an Intel/AMD PC, 64-bit Python 3.10 to 3.14 (developed on
+3.14; **3.15 is too new** for some libraries, but can be installed alongside), and
+the Apple Music app from the Microsoft Store.
 
 Double-click `setup.bat`, or from a PowerShell terminal (VS Code's default) run:
 
@@ -74,5 +75,7 @@ run an unsigned file (Python libraries usually aren't signed). Two possible caus
   Only the IT department can allow it.
 
 **"Failed building wheel" / "getting requirements to build wheel"** — no ready-made
-copy of a library exists for that Python, so pip tried to compile it. Install
-64-bit Python 3.13 or newer from python.org, delete `.venv`, and run setup again.
+copy of a library exists for that Python, so pip tried to compile it. Usually the
+Python is too new (3.15) or 32-bit: install 64-bit Python 3.14 alongside it
+(`py install 3.14`, or the installer from python.org) and run setup again; it
+picks 3.14 and rebuilds `.venv` by itself.
