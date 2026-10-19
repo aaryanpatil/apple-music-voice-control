@@ -60,3 +60,19 @@ settings in `%APPDATA%\Voice Control`.
 
 The bundled fonts (DM Sans, Source Serif 4) are under the SIL Open Font License;
 see `fonts/`.
+
+## Troubleshooting
+
+**"An Application Control policy has blocked this file"** — Windows is refusing to
+run an unsigned file (Python libraries usually aren't signed). Two possible causes:
+
+- **Smart App Control** (Windows 11). Check in *Windows Security → App & browser
+  control → Smart App Control*. If it's **On**, it blocks most Python setups; turning
+  it **Off** fixes this, but Windows only lets you turn it back on by resetting or
+  reinstalling Windows, so decide whether you're OK with that.
+- **A work/school policy** (App Control for Business or AppLocker) on a managed PC.
+  Only the IT department can allow it.
+
+**"Failed building wheel" / "getting requirements to build wheel"** — no ready-made
+copy of a library exists for that Python, so pip tried to compile it. Install
+64-bit Python 3.13 or newer from python.org, delete `.venv`, and run setup again.
