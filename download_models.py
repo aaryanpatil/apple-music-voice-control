@@ -43,8 +43,8 @@ def main():
         print(f"{WHISPER_NAME}: already there")
     else:
         print(f"{WHISPER_NAME}: downloading (~480 MB)...")
-        from faster_whisper import download_model
-        download_model("small.en", output_dir=str(MODELS / WHISPER_NAME))
+        from whisper_loader import import_faster_whisper
+        import_faster_whisper().download_model("small.en", output_dir=str(MODELS / WHISPER_NAME))
 
     print("Models ready.")
 

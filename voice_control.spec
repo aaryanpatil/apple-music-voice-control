@@ -24,8 +24,9 @@ a = Analysis(  # noqa: F821
     # collect the DLLs explicitly.
     binaries=sum((collect_dynamic_libs(pkg) for pkg in ("vosk", "winrt", "ctranslate2", "uiautomation")), []),
     hiddenimports=collect_submodules("winrt"),
-    # onnxruntime (48 MB) is only for faster-whisper's voice-activity filter, which isn't used.
-    excludes=["make_icon", "onnxruntime"],
+    # Not used: onnxruntime is for faster-whisper's voice-activity filter, and av
+    # for decoding audio files (whisper_loader.py stands in for it).
+    excludes=["make_icon", "onnxruntime", "av"],
 )
 pyz = PYZ(a.pure)  # noqa: F821
 exe = EXE(  # noqa: F821

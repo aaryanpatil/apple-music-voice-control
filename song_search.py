@@ -92,7 +92,8 @@ class SongSearcher(threading.Thread):
                     self.busy = False
 
     def _load(self):
-        from faster_whisper import WhisperModel  # slow import; keep it off the UI thread
+        from whisper_loader import import_faster_whisper  # slow import; keep it off the UI thread
+        WhisperModel = import_faster_whisper().WhisperModel
         if not WHISPER_DIR.exists():
             raise RuntimeError(f"not found at {WHISPER_DIR}")
         self._model = WhisperModel(str(WHISPER_DIR), device="cpu", compute_type="int8")

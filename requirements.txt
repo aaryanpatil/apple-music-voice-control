@@ -7,6 +7,9 @@ winrt-Windows.Media.Control
 customtkinter
 pillow
 pyinstaller
-faster-whisper
 uiautomation
 numpy
+ctranslate2
+tokenizers
+huggingface-hub
+tqdm
