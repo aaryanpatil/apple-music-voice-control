@@ -1,0 +1,12 @@
+vosk
+sounddevice
+winrt-runtime
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections
+winrt-Windows.Media.Control
+customtkinter
+pillow
+pyinstaller
+faster-whisper
+uiautomation
+numpy

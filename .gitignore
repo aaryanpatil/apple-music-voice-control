@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Speech models: too big for GitHub (Whisper's is 480 MB). setup.bat downloads them.
+models/
+
+# PyInstaller output (build.bat)
+build/
+dist/
+
+# Personal settings (mic, wake word, ...)
+settings.json
