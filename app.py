@@ -22,10 +22,11 @@ from PIL import Image, ImageDraw, ImageTk
 import controller
 
 # Bundled files sit next to this module, both from source and in the built exe.
-# Settings must be writable, so the exe keeps them in %APPDATA%\Voice Control.
+# Settings must be writable, so the exe keeps them in %APPDATA%\Amphion.
 APP_DIR = Path(__file__).parent
 FROZEN = getattr(sys, "frozen", False)  # running as the PyInstaller-built exe
-DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "Voice Control" if FROZEN else APP_DIR
+DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "Amphion" if FROZEN else APP_DIR
+OLD_DATA_DIR = DATA_DIR.parent / "Voice Control"  # the app's name before it was Amphion
 SETTINGS_FILE = DATA_DIR / "settings.json"
 FONTS_DIR = APP_DIR / "fonts"
 ICON_FILE = APP_DIR / "assets" / "icon.ico"  # made by make_icon.py
@@ -789,7 +790,7 @@ def play_chime():
                     envelope = min(1.0, i / (rate * 0.005)) * math.exp(-i / (rate * 0.045))
                     sample = int(32767 * 0.18 * envelope * math.sin(2 * math.pi * freq * i / rate))
                     frames += sample.to_bytes(2, "little", signed=True)
-            _chime_file = os.path.join(tempfile.gettempdir(), "voice_control_chime.wav")
+            _chime_file = os.path.join(tempfile.gettempdir(), "amphion_chime.wav")
             with wave.open(_chime_file, "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)
@@ -946,9 +947,10 @@ def selftest(root, out_path):
 def main():
     # Own taskbar identity, so Windows shows our icon instead of Python's.
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("VoiceControl.AppleMusic")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Amphion.AppleMusic")
     except Exception:
         pass
+    move_old_settings()
     load_fonts()
     ctk.set_appearance_mode("dark" if load_settings()["night"] else "light")
     root = Window()
@@ -957,6 +959,16 @@ def main():
         out = sys.argv[sys.argv.index("--selftest") + 1]
         root.after(2000, lambda: selftest(root, out))
     root.mainloop()
+
+
+def move_old_settings():
+    """The exe used to be called Voice Control and kept its settings in
+    %APPDATA%\\Voice Control; move them over the first time Amphion runs."""
+    if FROZEN and OLD_DATA_DIR.is_dir() and not DATA_DIR.exists():
+        try:
+            OLD_DATA_DIR.rename(DATA_DIR)
+        except OSError:
+            pass  # start with default settings rather than not at all
 
 
 def report_crash():

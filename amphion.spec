@@ -1,7 +1,7 @@
-# PyInstaller recipe for Voice Control. Run build.bat rather than this directly.
+# PyInstaller recipe for Amphion. Run build.bat rather than this directly.
 #
-# Produces dist\Voice Control\ : a self-contained folder (Python, libraries, speech
-# model, fonts, icon) with "Voice Control.exe" inside. A folder rather than a single
+# Produces dist\Amphion\ : a self-contained folder (Python, libraries, speech
+# model, fonts, icon) with "Amphion.exe" inside. A folder rather than a single
 # exe because a one-file build unpacks ~100 MB to a temp dir on every launch.
 
 import os
@@ -34,9 +34,9 @@ exe = EXE(  # noqa: F821
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Voice Control",
+    name="Amphion",
     icon=os.path.join(here, "assets", "icon.ico"),
     console=False,
     upx=False,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="Voice Control")  # noqa: F821
+coll = COLLECT(exe, a.binaries, a.datas, name="Amphion")  # noqa: F821

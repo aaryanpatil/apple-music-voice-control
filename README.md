@@ -63,9 +63,10 @@ focus is then returned to the window you were using.
 build.bat
 ```
 
-Builds `dist\Voice Control\Voice Control.exe` (a self-contained folder; no Python
+Builds `dist\Amphion\Amphion.exe` (a self-contained folder; no Python
 needed to run it) with PyInstaller, then runs a self-test on it. The exe keeps its
-settings in `%APPDATA%\Voice Control`.
+settings in `%APPDATA%\Amphion` (and moves them over from `%APPDATA%\Voice Control`,
+where builds from before the rename kept them).
 
 ## Licenses
 

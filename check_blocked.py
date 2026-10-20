@@ -1,4 +1,4 @@
-"""Checks that Windows lets everything Voice Control needs actually run.
+"""Checks that Windows lets everything Amphion needs actually run.
 
 Smart App Control (and work "App Control" policies) block unsigned files they
 don't trust. Python itself is signed, but many libraries' native files aren't, so

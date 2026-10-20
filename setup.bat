@@ -6,7 +6,7 @@ setlocal
 cd /d "%~dp0"
 
 echo.
-echo === Voice Control setup ===
+echo === Amphion setup ===
 echo.
 echo [1/5] Looking for 64-bit Python 3.10 to 3.14...
 rem The speech libraries only come ready-made for 64-bit Intel/AMD Windows, and
@@ -56,12 +56,12 @@ echo [5/5] Checking that Windows lets everything run...
 .venv\Scripts\python.exe check_blocked.py || goto :blocked
 
 echo.
-echo === Setup finished. Double-click start.bat to open Voice Control. ===
+echo === Setup finished. Double-click start.bat to open Amphion. ===
 goto :end
 
 :no_python
 echo.
-echo   No suitable Python found. Voice Control needs 64-bit Python 3.10 to 3.14 on an
+echo   No suitable Python found. Amphion needs 64-bit Python 3.10 to 3.14 on an
 echo   Intel/AMD PC. Python 3.15 is too new: some of its libraries (Whisper's engine,
 echo   the Windows media controls) don't have builds for it yet. ARM and 32-bit
 echo   Python aren't supported either.
