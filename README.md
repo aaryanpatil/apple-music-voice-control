@@ -1,7 +1,8 @@
 # Apple Music Voice Control
 
 Control the Apple Music app on Windows with your voice, without switching windows:
-**play**, **pause**, **next**, **previous**, and **"play \<song\> by \<artist\>"**.
+**play**, **pause**, **next**, **previous**, **"play \<song\> by \<artist\>"** and
+**"play the album \<album\>"**.
 
 Speech recognition runs offline. Commands use [Vosk](https://alphacephei.com/vosk/),
 limited to the command words so it's fast; song requests are transcribed with
@@ -29,8 +30,9 @@ won't store files that large.
 
 Double-click `start.bat` (or run `.\start.bat`).
 
-Pick a microphone and, ideally, a wake word (much more reliable while music with
-vocals is playing), then **Start listening**.
+Pick a microphone, then **Start listening**. Commands start with the assistant's
+name, Amphion: say "Amphion" (or "Hey Amphion"), wait for the chime, then the
+command, or say it in one go: "Amphion, next".
 
 ## How it works
 
@@ -39,12 +41,13 @@ vocals is playing), then **Start listening**.
 | `app.py` | The window: settings, playback buttons, console, night mode |
 | `controller.py` | Microphone → command recognition; play/pause/next/previous through Windows' media controls |
 | `song_search.py` | Transcribes "play …" requests with Whisper and works out what to search for |
-| `apple_music_ui.py` | Plays a specific song by driving Apple Music's search through UI Automation |
+| `apple_music_ui.py` | Plays a specific song or album by driving Apple Music's search through UI Automation |
 | `make_icon.py` | Draws the app icon into `assets/` |
 
 Playing a specific song: Apple Music has no API for that, so `apple_music_ui.py`
 types the request into Apple Music's search, then chooses "Play '…'" from the top
-song's menu. Apple Music comes to the front for a few seconds while it does this;
+song's menu (for an album: opens the top album and presses its Play button).
+Apple Music comes to the front for a few seconds while it does this;
 focus is then returned to the window you were using.
 
 ## Build the exe

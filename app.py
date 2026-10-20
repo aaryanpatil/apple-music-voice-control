@@ -536,7 +536,8 @@ class App:
 
     def update_hint(self):
         self.hint.configure(text=f"Say “{ASSISTANT}” or “Hey {ASSISTANT}”, then: play, pause,\n"
-                                 f"next, previous or “play <song> by <artist>”.\n"
+                                 f"next, previous, “play <song> by <artist>”\n"
+                                 f"or “play the album <album>”.\n"
                                  f"Or in one go: “{ASSISTANT}, next”.")
 
     def on_setting_changed(self):
@@ -643,16 +644,19 @@ class App:
 
     def handle_search(self, data):
         stage = data["stage"]
+        kind = data.get("kind", "song")
         if stage == "heard":
-            self.write_log(f"Looking up “{data['query']}” in Apple Music…", "dim")
+            what = "" if kind == "song" else f"the {kind} "
+            self.write_log(f"Looking up {what}“{data['query']}” in Apple Music…", "dim")
         elif stage == "playing":
-            self.write_log(f"♪ {data['title']} · {data['artist']}", "ok")
+            what = "" if kind == "song" else f"  ({kind})"
+            self.write_log(f"♪ {data['title']} · {data['artist']}{what}", "ok")
             self.show_state("playing")
         elif stage == "resumed":
             self.write_log("“play” → play", "ok")
             self.show_state("playing")
         elif stage == "failed":
-            what = f"“{data['query']}”" if data.get("query") else "that song"
+            what = f"“{data['query']}”" if data.get("query") else f"that {kind}"
             self.write_log(f"Couldn't play {what}: {data['error']}", "err")
 
     # ---------- misc ----------

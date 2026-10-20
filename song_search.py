@@ -1,4 +1,5 @@
-"""Turns a spoken "play <song> [by <artist>]" into that song playing.
+"""Turns a spoken "play <song> [by <artist>]" (or "play the album ...") into that
+song or album playing.
 
 The command recognizer (Vosk, limited to a few words) hears "play" and records
 what follows; this transcribes it with Whisper, which runs offline and handles
@@ -24,9 +25,10 @@ FILLER = {"me", "the song", "song", "a song", "some"}
 NOT_A_SONG = {"music", "the music", "something", "it", "again", "my music"}  # "play music" = resume
 
 
-def search_text(transcript, wake=None):
-    """What to search for in a transcript like "Jarvis, play Uptown Girl by Westlife."
-    Returns "uptown girl westlife", or None if nothing follows "play"."""
+def parse_request(transcript, wake=None):
+    """What a transcript like "Amphion, play Uptown Girl by Westlife." asks for:
+    {"kind": "song", "query": "uptown girl westlife"}. "play the album Thriller"
+    gives {"kind": "album", "query": "thriller"}. None if nothing follows "play"."""
     words = re.sub(r"[^\w' ]+", " ", transcript.lower()).split()
     start = next((i for i, w in enumerate(words) if w in PLAY_WORDS), None)
     if start is None:
@@ -41,16 +43,30 @@ def search_text(transcript, wake=None):
             f = filler.split()
             if words[:len(f)] == f:
                 words, stripped = words[len(f):], True
+    words, album = _take(words, "album")
     words = [w for w in words if w not in ("by", "please")]
     query = " ".join(words)
-    return query if query and query not in NOT_A_SONG else None
+    if not query or query in NOT_A_SONG:
+        return None
+    return {"kind": "album" if album else "song", "query": query}
+
+
+def _take(words, marker):
+    """Remove `marker` and an article just before it: "the album thriller" ->
+    "thriller", "thriller album" -> "thriller". Returns (words, whether it was there)."""
+    if marker not in words:
+        return words, False
+    i = words.index(marker)
+    start = i - 1 if i and words[i - 1] in ("the", "a", "an") else i
+    return words[:start] + words[i + 1:], True
 
 
 class SongSearcher(threading.Thread):
-    """Worker thread: audio of a "play ..." request in, song playing out.
+    """Worker thread: audio of a "play ..." request in, song or album playing out.
 
     Reports to on_event("search", {...}) with a "stage" of:
-      "heard"   - transcribed; {"query"} is what will be searched for
+      "heard"   - transcribed; {"kind"} is "song" or "album", {"query"} what will
+                  be searched for
       "playing" - started; {"title", "artist"}
       "failed"  - {"error"}
     A request with nothing after "play" just resumes playback ({"stage": "resumed"}).
@@ -108,16 +124,18 @@ class SongSearcher(threading.Thread):
         if self._model is None:
             raise RuntimeError("speech model isn't loaded")
         transcript = self.transcribe(audio_bytes)
-        query = search_text(transcript, self.wake)
-        if not query:
+        request = parse_request(transcript, self.wake)
+        if not request:
             if self.send_play:
                 self.send_play()
             self.on_event("search", {"stage": "resumed", "transcript": transcript})
             return
-        self.on_event("search", {"stage": "heard", "query": query, "transcript": transcript})
+        info = {"kind": request["kind"], "query": request["query"]}
+        self.on_event("search", {"stage": "heard", "transcript": transcript, **info})
+        play = {"song": apple_music_ui.play_song, "album": apple_music_ui.play_album}[request["kind"]]
         try:
-            title, artist = apple_music_ui.play_song(query)
+            title, artist = play(request["query"])
         except apple_music_ui.PlayError as e:
-            self.on_event("search", {"stage": "failed", "query": query, "error": str(e)})
+            self.on_event("search", {"stage": "failed", "error": str(e), **info})
             return
-        self.on_event("search", {"stage": "playing", "query": query, "title": title, "artist": artist})
+        self.on_event("search", {"stage": "playing", "title": title, "artist": artist, **info})

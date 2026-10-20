@@ -1,8 +1,8 @@
-"""Plays a specific song in the Apple Music Windows app by driving its UI.
+"""Plays a specific song or album in the Apple Music Windows app by driving its UI.
 
 Apple Music has no API for "play this song", so this does what a person would:
-search, open the top song's album, and choose "Play '<song>'" from that track's
-menu. It works through UI Automation (the accessibility interface), so nothing
+search, then choose "Play '<song>'" from the top song's menu, or open the top
+album and press its Play button. It works through UI Automation (the accessibility interface), so nothing
 is clicked with the mouse. Apple Music does come to the front while it works
 (setting its search box activates it), so the previously focused window is put
 back afterwards, and a minimized Apple Music is minimized again.
@@ -64,6 +64,17 @@ class PlayError(Exception):
 def play_song(query, timeout=10):
     """Search Apple Music for `query` and play the top song result.
     Returns (title, artist) of what was started, e.g. ("Uptown Girl", "Billy Joel")."""
+    return _in_apple_music(lambda window: _search_and_play(window, query, timeout))
+
+
+def play_album(query, timeout=10):
+    """Search Apple Music for `query` and play the top album result.
+    Returns (title, artist), e.g. ("Thriller", "Michael Jackson")."""
+    return _in_apple_music(lambda window: _play_collection(window, query, "Album", "Albums", timeout))
+
+
+def _in_apple_music(action):
+    """Run action(window) on Apple Music's window, then put the user's window back."""
     window = auto.WindowControl(searchDepth=1, ClassName="WinUIDesktopWin32WindowClass",
                                 Name="Apple Music")
     if not window.Exists(1):
@@ -76,7 +87,7 @@ def play_song(query, timeout=10):
         user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
         time.sleep(0.3)
     try:
-        return _search_and_play(window, query, timeout)
+        return action(window)
     finally:
         if was_minimized:
             user32.ShowWindow(hwnd, SW_SHOWMINNOACTIVE)
@@ -84,7 +95,8 @@ def play_song(query, timeout=10):
             focus(previous)
 
 
-def _search_and_play(window, query, timeout):
+def _search(window, query, pick, timeout):
+    """Search for `query` and return pick(window) once the results show it, or None."""
     global _last_search
     box = search_box(window)
     if not box:
@@ -93,24 +105,44 @@ def _search_and_play(window, query, timeout):
     # searching the same text again doesn't reload the page, so there'd be no
     # change to wait for.
     key = query.strip().lower()
-    tile = None
     if _last_search[0] == key and _last_search[1] == _page_id(window):
-        tile = _top_song(window)
-    if not tile:
-        # Search, then wait for a new results page (not the one already showing).
-        before = _page_id(window)
-        box.GetValuePattern().SetValue(query)
-        # Setting the text redraws the box, and for a moment its Search button
-        # can't be pressed yet; look it up again until it can.
-        query_button = _wait(lambda: getattr(find(window, auto.ControlType.ButtonControl,
-                                                  automation_id="QueryButton"),
-                                             "GetInvokePattern", lambda: None)(), 2)
-        if not query_button:
-            raise PlayError("Apple Music's search button didn't respond")
-        query_button.Invoke()
-        tile = _wait(lambda: _page_id(window) not in (before, None) and _top_song(window), timeout)
-        if tile:
-            _last_search = (key, _page_id(window))
+        found = pick(window)
+        if found:
+            return found
+    # Search, then wait for a new results page (not the one already showing).
+    before = _page_id(window)
+    box.GetValuePattern().SetValue(query)
+    # Setting the text redraws the box, and for a moment its Search button
+    # can't be pressed yet; look it up again until it can.
+    query_button = _wait(lambda: getattr(find(window, auto.ControlType.ButtonControl,
+                                              automation_id="QueryButton"),
+                                         "GetInvokePattern", lambda: None)(), 2)
+    if not query_button:
+        raise PlayError("Apple Music's search button didn't respond")
+    query_button.Invoke()
+    found = _wait(lambda: _page_id(window) not in (before, None) and pick(window), timeout)
+    if found:
+        _last_search = (key, _page_id(window))
+    return found
+
+
+def _play_collection(window, query, kind, section, timeout):
+    """Search, open the top `kind` ("Album") result, or else the first in the results'
+    `section` ("Albums"), and press Play on its page."""
+    item = _search(window, query, lambda w: _top_result(w, kind) or _section_first(w, section), timeout)
+    if not item:
+        raise PlayError(f"no {kind.lower()} found for “{query}”")
+    before = _page_id(window)
+    item.GetInvokePattern().Invoke()
+    play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, "Play"), timeout)
+    if not play:
+        raise PlayError(f"the {kind.lower()}'s page didn't open")
+    play.GetInvokePattern().Invoke()
+    return _header_text(window)
+
+
+def _search_and_play(window, query, timeout):
+    tile = _search(window, query, _top_song, timeout)
     if not tile:
         raise PlayError(f"no song found for “{query}”")
     title, subtitle = (t.Name for t in tile.GetChildren()[0].GetChildren()[1:3])
@@ -167,10 +199,47 @@ def search_box(window):
 
 
 def _top_song(window):
+    return _top_result(window, "Song")
+
+
+def _top_result(window, kind):
+    """The first "Top Results" tile of a kind: tiles are named like
+    "Thriller Album · Michael Jackson"."""
     top = find(window, auto.ControlType.ListItemControl, name="Top Results")
     if not top:
         return None
-    return next((t for t in _list_items(top, 4) if re.search(r"\bSong\b", t.Name)), None)
+    label = re.compile(rf"\b{kind}\s·")
+    return next((t for t in _list_items(top, 4) if label.search(t.Name)), None)
+
+
+def _section_first(window, section):
+    """The first item in a section of the search results, like "Albums"."""
+    content = _content(window)
+    page = find(content, auto.ControlType.ListControl) if content else None
+    group = find(page, auto.ControlType.ListItemControl, name=section) if page else None
+    return find(group, auto.ControlType.ListItemControl) if group else None
+
+
+def _header(window):
+    """The header of an album or playlist page (artwork, title, Play, Shuffle...)."""
+    content = _content(window)
+    page = find(content, auto.ControlType.ListControl) if content else None
+    return find(page, auto.ControlType.GroupControl) if page else None
+
+
+def _header_button(window, name):
+    header = _header(window)
+    button = find(header, auto.ControlType.ButtonControl, name=name) if header else None
+    return button if button and button.BoundingRectangle.width() > 0 else None
+
+
+def _header_text(window):
+    """(title, the line under it) from an album or playlist page: ("Thriller",
+    "Michael Jackson"), or ("Gym", "34 items · 1 hour, 52 minutes")."""
+    header = _header(window)
+    inner = header.GetChildren()[0] if header else None
+    texts = [c.Name for c in inner.GetChildren() if c.ControlTypeName == "TextControl"] if inner else []
+    return tuple(texts + ["", ""])[:2]
 
 
 def _track_row(window, title):
@@ -258,5 +327,9 @@ def focus(hwnd):
 
 if __name__ == "__main__":
     import sys
+    args = sys.argv[1:]
+    play = play_song
+    if args[:1] == ["--album"]:
+        play, args = play_album, args[1:]
     t = time.monotonic()
-    print(play_song(" ".join(sys.argv[1:]) or "uptown girl"), f"{time.monotonic() - t:.1f}s")
+    print(play(" ".join(args) or "uptown girl"), f"{time.monotonic() - t:.1f}s")
