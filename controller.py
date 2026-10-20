@@ -56,9 +56,21 @@ PHRASES = {
     "last song": "previous",
 }
 
-# Wake words offered in the UI. All are in the speech model's vocabulary and
-# chosen to be distinct from the command words and rare in lyrics.
-WAKE_WORDS = ["jarvis", "computer", "maestro", "music", "player", "radio", "assistant"]
+# Wake words offered in the UI, Amphion (the assistant's name) first. All are
+# distinct from the command words and rare in lyrics.
+WAKE_WORDS = ["amphion", "apollo", "jarvis", "computer", "maestro", "player", "radio", "assistant"]
+
+# How Vosk should listen for wake words that aren't in its vocabulary: as
+# sequences of words it knows that sound the same. "Amphion" (am-fee-on,
+# am-feh-on, am-fe-uhn) is heard reliably as either of these; spellings ending
+# in "un"/"an" also matched "I am free and I am on ..." in lyrics.
+WAKE_SOUNDS = {"amphion": ["am phi on", "am fe on"]}
+
+# After the wake word on its own ("Amphion"), how long a command is listened for.
+ARM_WINDOW = 5.0
+# Least confidence Vosk must have in the wake word, where it reports one (final
+# results; in-progress ones don't have confidences). Real "Amphion"s scored 0.84+.
+WAKE_CONF = 0.75
 
 # After a bare "play": how long to wait for more words before treating it as
 # "resume", the longest song request recorded after it, and the pause that ends
@@ -70,6 +82,7 @@ PREROLL = 1.0  # audio kept from before "play" was recognized, so it's included
 # of the way from it to the voice level, and speech needs this many loud
 # 0.1s chunks in a row.
 BG_PERCENTILE, VOICE_FRACTION, LOUD_RUN = 0.5, 0.6, 2
+VOICE_HEADROOM = 6.0  # the threshold stays at least this many dB below the voice
 
 # Virtual-key codes for the fallback path.
 MEDIA_KEYS = {"play": 0xB3, "pause": 0xB3, "next": 0xB0, "previous": 0xB1}
@@ -188,6 +201,8 @@ class Listener(threading.Thread):
       ("status", str)   ("level", float 0-1)   ("error", str)
       ("heard", {"text", "conf", "action", "note"})
       ("search", {"stage", ...})  - a "play <song>" request; see song_search
+      ("wake", bool)              - started / stopped listening for a command
+                                    after hearing the wake word on its own
     action is None when speech was heard but ignored (no wake word, low
     confidence, not a command).
     """
@@ -240,7 +255,10 @@ class Listener(threading.Thread):
                     continue
                 self.on_event("level", _level(data))
                 detector.min_conf = self.min_conf
+                was_armed = detector.armed
                 heard = detector.feed(data)
+                if detector.armed != was_armed:
+                    self.on_event("wake", detector.armed)
                 if heard is None:
                     continue
                 if heard["action"] == "search":
@@ -264,14 +282,21 @@ class CommandDetector:
 
     A bare "play" starts a recording: if more words follow, the result is a
     "search" action carrying that audio (for Whisper); if not, it's "play".
+
+    With a wake word, commands count only after it: in one go ("apollo next"),
+    or Siri-style: the wake word on its own arms the detector (`armed`) and the
+    next command within ARM_WINDOW seconds counts without repeating it.
     """
 
     def __init__(self, wake=None, min_conf=0.6):
         self.wake = wake.lower() if wake else None
         self.min_conf = min_conf
+        self._sounds = [s.split() for s in WAKE_SOUNDS.get(self.wake, [self.wake])] if self.wake else []
         vocab = set(PHRASES)
-        if self.wake:
-            vocab |= {f"{self.wake} {p}" for p in PHRASES}
+        # "Hey Amphion" needs no entry: "hey" comes through as [unk], which is skipped.
+        # (Listing it made "Hotel" sound like "hey am...".)
+        for sound in WAKE_SOUNDS.get(self.wake, [self.wake]) if self.wake else []:
+            vocab |= {sound} | {f"{sound} {p}" for p in PHRASES}
         self.rec = KaldiRecognizer(load_model(), SAMPLE_RATE,
                                    json.dumps(sorted(vocab) + ["[unk]"]))
         self.rec.SetWords(True)
@@ -281,6 +306,48 @@ class CommandDetector:
         self._history = collections.deque()  # recent audio, for the PREROLL
         self._history_s = 0.0
         self._request = None  # recording in progress after a bare "play"
+        self._clock = 0.0          # seconds of audio fed so far
+        self._armed_until = None   # set while listening for a command after the wake word
+
+    @property
+    def armed(self):
+        return self._armed_until is not None
+
+    def _merge_wake(self, items):
+        """Turn the wake word's spoken form back into one word: [("am", c1), ("phi", c2),
+        ("on", c3), ("next", c4)] -> [("amphion", avg), ("next", c4)]. Items are
+        (word, confidence or None) pairs."""
+        out, i = [], 0
+        while i < len(items):
+            for sound in self._sounds:
+                if [w for w, _ in items[i:i + len(sound)]] == sound:
+                    confs = [c for _, c in items[i:i + len(sound)] if c is not None]
+                    out.append((self.wake, sum(confs) / len(confs) if confs else None))
+                    i += len(sound)
+                    break
+            else:
+                out.append(items[i])
+                i += 1
+        return out
+
+    def _understand(self, items):
+        """("wake", None) for the wake word on its own, ("command", action) for a
+        command that counts (after the wake word, or while armed), else (None, None).
+        items are (word, confidence or None) pairs."""
+        words = [w for w, _ in items]
+        if self.wake:
+            if self.wake in words:
+                last = len(words) - 1 - words[::-1].index(self.wake)
+                conf = items[last][1]
+                if conf is not None and conf < WAKE_CONF:
+                    return None, None  # a shaky match, like "I'm feeling" in a chorus
+                words = words[last + 1:]
+                if not words:
+                    return "wake", None
+            elif not self.armed:
+                return None, None
+        action = parse(" ".join(words), None) if words else None
+        return ("command", action) if action else (None, None)
 
     def stable_chunks(self):
         """Chunks (0.1 s each) a partial must hold before acting: 2-4 by strictness."""
@@ -290,32 +357,43 @@ class CommandDetector:
         """Returns {"text", "conf", "action", "early"} when something was heard, else None.
         action is None for speech that was ignored; conf is None for early results.
         A "search" action also has "audio": the recorded request."""
+        self._clock += len(data) / 2 / SAMPLE_RATE
         self._remember(data)
         if self._request is not None:
             return self._record(data)
+        if self.armed and self._clock > self._armed_until:
+            self._armed_until = None  # no command came
 
         if self.rec.AcceptWaveform(data):
             result = json.loads(self.rec.Result())
             raw = [w["word"] for w in result.get("result", [])]
-            words = [w for w in result.get("result", []) if w["word"] != "[unk]"]
+            words = self._merge_wake([(w["word"], w["conf"]) for w in result.get("result", [])
+                                      if w["word"] != "[unk]"])
             new = words[self._consumed:]
             self._reset_partial(consumed=0)
             if not new:
                 return None
-            text = " ".join(w["word"] for w in new)
-            conf = sum(w["conf"] for w in new) / len(new)
-            action = parse(text, self.wake) if conf >= self.min_conf else None
-            if action == "play" and self._bare_play(text) and raw[-1] != "play":
-                # The whole request ended before "play" was caught early; it's
-                # all in the recent audio.
-                return self._heard_search(b"".join(self._history))
+            text = " ".join(w for w, _ in new)
+            conf = sum(c for _, c in new) / len(new)
+            kind, action = self._understand(new) if conf >= self.min_conf else (None, None)
+            if kind == "wake":
+                self._armed_until = self._clock + ARM_WINDOW
+                return None
+            if kind == "command":
+                self._armed_until = None
+                if action == "play" and self._bare_play(text) and raw[-1] != "play":
+                    # The whole request ended before "play" was caught early;
+                    # it's all in the recent audio.
+                    return self._heard_search(b"".join(self._history))
             return {"text": text, "conf": conf, "action": action, "early": False}
 
         partial = json.loads(self.rec.PartialResult()).get("partial", "")
-        words = [w for w in partial.split() if w != "[unk]"]
-        text = " ".join(words[self._consumed:])
-        action = parse(text, self.wake) if text else None
-        if action is None:
+        items = self._merge_wake([(w, None) for w in partial.split() if w != "[unk]"])
+        words = [w for w, _ in items]
+        new = items[self._consumed:]
+        text = " ".join(w for w, _ in new)
+        kind, action = self._understand(new) if new else (None, None)
+        if kind is None:
             self._last, self._streak = None, 0
             return None
         self._streak = self._streak + 1 if text == self._last else 1
@@ -323,6 +401,10 @@ class CommandDetector:
         if self._streak < self.stable_chunks():
             return None
         self._reset_partial(consumed=len(words))
+        if kind == "wake":
+            self._armed_until = self._clock + ARM_WINDOW
+            return None
+        self._armed_until = None
         if action == "play" and self._bare_play(text):
             # Could be "resume" or "play <song>": record what follows to find out.
             self._start_request()
@@ -330,10 +412,13 @@ class CommandDetector:
         return {"text": text, "conf": None, "action": action, "early": True}
 
     def _bare_play(self, text):
+        """True if the command starts with "play" (not "resume"): a song may be named
+        after it. Vosk may force the song's words into command words ("play hey
+        am..."), so anything after "play" still counts; Whisper sorts it out."""
         words = text.split()
         if self.wake and self.wake in words:
-            words = words[words.index(self.wake) + 1:]
-        return words == ["play"]
+            words = words[len(words) - words[::-1].index(self.wake):]
+        return words[:1] == ["play"]
 
     def _remember(self, data):
         """Keep the last few seconds of audio."""
@@ -358,8 +443,11 @@ class CommandDetector:
                 break
         levels = sorted(_db(c) for c in chunks)
         background = levels[int(len(levels) * BG_PERCENTILE)]
-        voice = max(_db(c) for c in chunks[-8:])       # the last ~0.8s holds "play"
+        voice = max(_db(c) for c in chunks[-15:])  # the last ~1.5s holds "play", even if caught late
         threshold = background + max(3.0, VOICE_FRACTION * (voice - background))
+        # The last few seconds can be mostly speech ("Amphion ... play ..."), which
+        # puts the "background" near the voice level; keep the threshold below it.
+        threshold = max(background + 3.0, min(threshold, voice - VOICE_HEADROOM))
         self._request = {"audio": preroll, "elapsed": 0.0, "more": False,
                          "quiet": 0.0, "loud": 0, "threshold": threshold}
 

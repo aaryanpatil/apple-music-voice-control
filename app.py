@@ -8,8 +8,11 @@ import os
 import queue
 import sys
 import time
+import tempfile
 import tkinter as tk
 import traceback
+import wave
+import winsound
 from pathlib import Path
 
 import customtkinter as ctk
@@ -29,8 +32,8 @@ DEFAULT_MIC = "System default"
 # The console is the one flexible piece: at least CONSOLE_MIN_H tall, opening at
 # CONSOLE_MIN_H + CONSOLE_EXTRA_H, and growing to fill a taller window.
 CONSOLE_MIN_H, CONSOLE_EXTRA_H = 60, 60
-NO_WAKE = "None"
-DEFAULTS = {"mic": DEFAULT_MIC, "wake": None, "min_conf": 0.6, "autostart": False,
+NO_WAKE = "None (always listening)"
+DEFAULTS = {"mic": DEFAULT_MIC, "wake": "amphion", "min_conf": 0.6, "autostart": False,
             "console": True, "night": False}
 
 # Palette as (light, dark) pairs; CustomTkinter picks one by appearance mode.
@@ -541,14 +544,14 @@ class App:
         return None if w == NO_WAKE else w
 
     def update_hint(self):
-        w = self.selected_wake()
+        w = (self.selected_wake() or "").title()
         if w:
-            self.hint.configure(text=f"Say “{w} play”, “{w} pause”, “{w} next” or “{w} previous”,\n"
-                                     f"or “{w} play <song> by <artist>”.")
+            self.hint.configure(text=f"Say “{w}”, then: play, pause, next, previous\n"
+                                     f"or “play <song> by <artist>”. Or in one go: “{w}, next”.")
         else:
-            self.hint.configure(text="Say “play”, “pause”, “next”, “previous”\n"
-                                     "or “play <song> by <artist>”. Over songs with vocals,\n"
-                                     "a wake word is far more reliable.")
+            self.hint.configure(text="Always listening for play, pause, next, previous and\n"
+                                     "“play <song> by <artist>”. Singing along or game audio\n"
+                                     "can set it off; a wake word avoids that.")
 
     def on_setting_changed(self):
         self.update_hint()
@@ -646,6 +649,13 @@ class App:
                 self.write_log(f"“{data['text']}” ignored" + (f" ({why})" if why else ""), "dim")
         elif kind == "search":
             self.handle_search(data)
+        elif kind == "wake" and self.listener:
+            if data:  # heard the wake word on its own: listening for a command
+                name = (self.selected_wake() or "").title()
+                self.set_button(f"{name} is listening…", LAVENDER, LAVENDER_HOVER)
+                play_chime()
+            else:
+                self.set_button("Listening · tap to stop", MINT, MINT_HOVER)
 
     def handle_search(self, data):
         stage = data["stage"]
@@ -705,6 +715,34 @@ class App:
         self.save()
         self.stop()
         self.root.destroy()
+
+
+_chime_file = None
+
+
+def play_chime():
+    """A soft two-note chime (made here, so there's no sound file to ship), played
+    without blocking when the wake word is heard on its own."""
+    global _chime_file
+    try:
+        if _chime_file is None:
+            rate, notes = 44100, (1046.5, 1568.0)  # C6 then G6
+            frames = bytearray()
+            for freq in notes:
+                n = int(rate * 0.12)
+                for i in range(n):
+                    envelope = min(1.0, i / (rate * 0.005)) * math.exp(-i / (rate * 0.045))
+                    sample = int(32767 * 0.18 * envelope * math.sin(2 * math.pi * freq * i / rate))
+                    frames += sample.to_bytes(2, "little", signed=True)
+            _chime_file = os.path.join(tempfile.gettempdir(), "voice_control_chime.wav")
+            with wave.open(_chime_file, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(bytes(frames))
+        winsound.PlaySound(_chime_file, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+    except Exception:
+        pass  # a missing chime shouldn't stop anything
 
 
 def dot_image(colors, size=8, gap=6, lift=1):
