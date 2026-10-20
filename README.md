@@ -54,8 +54,14 @@ song's menu (for an album: opens the top album and presses its Play button).
 Your own playlists are opened from the sidebar instead, matching the spoken name
 loosely ("current obsession" finds "Current obssession"); a playlist request
 without "my" plays yours if the name matches closely, else Apple Music's top
-playlist. Apple Music comes to the front for a few seconds while it does this;
-focus is then returned to the window you were using.
+playlist.
+
+**Keep Apple Music minimized** and it stays that way: all of this works on a
+minimized window, except a song's menu, for which Apple Music is shown fully
+transparent for about half a second (it takes keyboard focus for that moment, then
+gives it back). If it's open behind other windows instead, it comes to the front
+for a couple of seconds (typing in its search box brings it forward); focus is then
+returned to the window you were using.
 
 ## Build the exe
 

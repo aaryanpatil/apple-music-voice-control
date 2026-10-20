@@ -4,27 +4,49 @@ driving its UI.
 Apple Music has no API for "play this song", so this does what a person would:
 search, then choose "Play '<song>'" from the top song's menu, or open the top
 album or playlist and press its Play (or Shuffle) button. The user's own
-playlists are opened from the sidebar instead. It works through UI Automation (the accessibility interface), so nothing
-is clicked with the mouse. Apple Music does come to the front while it works
-(setting its search box activates it), so the previously focused window is put
-back afterwards, and a minimized Apple Music is minimized again.
+playlists are opened from the sidebar instead. It works through UI Automation
+(the accessibility interface), so nothing is clicked with the mouse.
+
+A minimized Apple Music stays minimized and out of sight: all of that works
+minimized except a song's menu, for which it's shown fully transparent for a
+moment. If it's open behind other windows instead, it comes to the front while
+it works (typing in its search box activates it). Either way the previously
+focused window is put back afterwards.
 """
 
+import contextlib
 import ctypes
 import re
 import time
+from ctypes import wintypes
 
 import uiautomation as auto
 from uiautomation import uiautomation as _uia
 
-user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+# Our own handle on user32: uiautomation sets its own types on ctypes.windll's.
+user32, kernel32 = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
 user32.GetForegroundWindow.restype = ctypes.c_void_p
 for _f in (user32.SetForegroundWindow, user32.BringWindowToTop, user32.IsIconic):
     _f.argtypes = [ctypes.c_void_p]
 user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
 user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+user32.SetLayeredWindowAttributes.argtypes = [ctypes.c_void_p, wintypes.COLORREF, ctypes.c_ubyte, wintypes.DWORD]
+user32.GetWindowPlacement.argtypes = user32.SetWindowPlacement.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+
+class WINDOWPLACEMENT(ctypes.Structure):
+    _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT), ("showCmd", wintypes.UINT),
+                ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
+                ("rcNormalPosition", wintypes.RECT)]
+
 
 SW_SHOWNOACTIVATE, SW_SHOWMINNOACTIVE = 4, 7
+GWL_EXSTYLE, WS_EX_LAYERED, LWA_ALPHA = -20, 0x80000, 0x2
 # uiautomation sleeps 0.5 s after every action unless told otherwise; every
 # action here passes waitTime=0, and the _wait loops wait for what's actually
 # needed instead.
@@ -113,24 +135,48 @@ def apple_music_window(wait=0):
 
 
 def _in_apple_music(action):
-    """Run action(window) on Apple Music's window, then put the user's window back."""
+    """Run action(window) on Apple Music's window, then put the user's window back.
+    A minimized Apple Music is left minimized: searching, opening pages and
+    pressing buttons all work that way (only menus need it shown; see
+    _shown_invisibly)."""
     window = apple_music_window(wait=1)
     if not window:
         raise PlayError("Apple Music isn't open")
     hwnd = window.NativeWindowHandle
     previous = user32.GetForegroundWindow()
-    was_minimized = bool(user32.IsIconic(hwnd))
-    if was_minimized:
-        # Menus don't open in a minimized window; show it without activating it.
-        user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-        time.sleep(0.3)
     try:
         return action(window)
     finally:
-        if was_minimized:
-            user32.ShowWindow(hwnd, SW_SHOWMINNOACTIVE)
         if previous and previous != hwnd:
             focus(previous)
+
+
+@contextlib.contextmanager
+def _shown_invisibly(window):
+    """For steps that don't work while Apple Music is minimized (its menus don't
+    open): show it fully transparent, without activating it, then minimize it
+    again. Opening a menu still activates it, so _in_apple_music puts the user's
+    window back afterwards. Does nothing if Apple Music isn't minimized."""
+    hwnd = window.NativeWindowHandle
+    if not user32.IsIconic(hwnd):
+        yield
+        return
+    placement = WINDOWPLACEMENT(length=ctypes.sizeof(WINDOWPLACEMENT))
+    user32.GetWindowPlacement(hwnd, ctypes.byref(placement))
+    style = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+    user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+    user32.SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA)
+    try:
+        user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        time.sleep(0.3)  # let it lay out
+        yield
+    finally:
+        # Back to minimized, as it was: the saved placement also keeps "restore
+        # to maximized" if it was maximized before being minimized.
+        user32.ShowWindow(hwnd, SW_SHOWMINNOACTIVE)
+        placement.showCmd = SW_SHOWMINNOACTIVE
+        user32.SetWindowPlacement(hwnd, ctypes.byref(placement))
+        user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style)
 
 
 def _search(window, query, pick, timeout):
@@ -290,8 +336,14 @@ def _search_and_play(window, query, timeout):
 
 
 def _play_from_menu(window, row):
-    """Choose "Play '<title>'" from a song row's "More" menu. The button only
-    exists on screen once the row is scrolled into view."""
+    """Choose "Play '<title>'" from a song row's "More" menu. (Invoking the row
+    itself only selects it, and its "Double Click" action doesn't play it.)"""
+    with _shown_invisibly(window):
+        _choose_play(window, row)
+
+
+def _choose_play(window, row):
+    # The More button only exists on screen once the row is scrolled into view.
     row.GetScrollItemPattern().ScrollIntoView(waitTime=0)
     more = _wait(lambda: (lambda b: b if b and b.BoundingRectangle.width() > 0 else None)(
         find(row, auto.ControlType.ButtonControl, name="More")), 2)
