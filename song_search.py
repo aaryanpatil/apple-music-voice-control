@@ -1,7 +1,8 @@
 """Turns a spoken "play <song> [by <artist>]" (or "play the album ...", "play my
-... playlist") into that song, album or playlist playing.
+... playlist", "shuffle ...") into that song, album or playlist playing.
 
-The command recognizer (Vosk, limited to a few words) hears "play" and records
+The command recognizer (Vosk, limited to a few words) hears "play" (or
+"shuffle") and records
 what follows; this transcribes it with Whisper, which runs offline and handles
 song titles and artist names well, then has apple_music_ui search and play it.
 """
@@ -22,30 +23,44 @@ PROMPT = "Play a song by an artist."  # nudges Whisper towards titles and names
 
 # Whisper sometimes hears "play" as one of these.
 PLAY_WORDS = {"play", "plays", "played", "playing", "place", "plate", "pray"}
+SHUFFLE_WORDS = {"shuffle", "shuffles", "shuffled", "shuffling"}
 FILLER = {"me", "the song", "song", "a song", "some"}
 NOT_A_SONG = {"music", "the music", "something", "it", "again", "my music"}  # "play music" = resume
 # How similar a spoken playlist name must be to one of the user's (0-1). "my ...
-# playlist" settles for a looser match; otherwise a close one, or it's looked
-# up in Apple Music's catalog (or, without "playlist", played as a song).
+# playlist" (or "shuffle my ...") settles for a looser match; otherwise a close
+# one, or it's looked up in Apple Music's catalog (or, without "playlist",
+# played as a song).
 MY_PLAYLIST_MATCH, PLAYLIST_MATCH = 0.7, 0.85
 
 
 def parse_request(transcript, wake=None):
     """What a transcript like "Amphion, play Uptown Girl by Westlife." asks for:
-      {"kind": "song", "query": "uptown girl westlife"}
-      "play the album Thriller"   -> {"kind": "album", "query": "thriller"}
-      "play my Gym playlist"      -> {"kind": "playlist", "query": "gym", "mine": True}
-      "play my Favourite Songs"   -> {"kind": "song", "query": "my favourite songs",
-                                      "library": "favourite songs"}
-    ("library": the user's playlist of that name if there is one, else the song).
-    None if nothing follows "play"."""
+      {"kind": "song", "query": "uptown girl westlife", "shuffle": False, "mine": False}
+      "play the album Thriller"   -> "kind": "album", "query": "thriller"
+      "play my Gym playlist"      -> "kind": "playlist", "query": "gym", "mine": True
+      "play my Favourite Songs"   -> "kind": "song", "query": "my favourite songs",
+                                     "library": "favourite songs"
+      "shuffle the album Thriller", "play my Gym playlist on shuffle" -> "shuffle": True
+      "shuffle Favourite Songs"   -> "kind": "song", "shuffle": True,
+                                     "library": "favourite songs"
+    ("library": the user's playlist of that name if there is one, else the song,
+    or for "shuffle", Apple Music's top album or playlist).
+    A bare "shuffle" gives {"action": "shuffle"}, "shuffle off" {"action":
+    "shuffle off"}. None if nothing follows "play"."""
     words = re.sub(r"[^\w' ]+", " ", transcript.lower()).split()
-    start = next((i for i, w in enumerate(words) if w in PLAY_WORDS), None)
+    start = next((i for i, w in enumerate(words) if w in PLAY_WORDS | SHUFFLE_WORDS), None)
     if start is None:
         return None
+    shuffle = words[start] in SHUFFLE_WORDS
     words = words[start + 1:]
     if wake and words and words[0] == wake:
         words = words[1:]
+    if shuffle and words in (["off"], ["of"]):
+        return {"action": "shuffle off"}
+    for ending in (["on", "shuffle"], ["in", "shuffle"], ["shuffled"]):
+        if len(words) > len(ending) and words[-len(ending):] == ending:
+            words, shuffle = words[:-len(ending)], True
+            break
     stripped = True
     while stripped:  # "play me the song ..." has more than one
         stripped = False
@@ -58,16 +73,19 @@ def parse_request(transcript, wake=None):
     words = [w for w in words if w not in ("by", "please")]
     query = " ".join(words)
     if not query or query in NOT_A_SONG:
-        return None
+        return {"action": "shuffle"} if shuffle else None
     mine = words[0] == "my"
     name = " ".join(words[1:]) if mine else query
     if playlist:
-        return {"kind": "playlist", "query": name, "mine": mine} if name else None
+        if not name:
+            return {"action": "shuffle"} if shuffle else None
+        return {"kind": "playlist", "query": name, "shuffle": shuffle, "mine": mine}
     if album:
-        return {"kind": "album", "query": query}
-    if mine and name:
-        return {"kind": "song", "query": query, "library": name}
-    return {"kind": "song", "query": query}
+        return {"kind": "album", "query": query, "shuffle": shuffle, "mine": False}
+    request = {"kind": "song", "query": query, "shuffle": shuffle, "mine": mine}
+    if (mine or shuffle) and name:
+        request["library"] = name
+    return request
 
 
 def best_playlist(spoken, names, cutoff):
@@ -98,18 +116,21 @@ class SongSearcher(threading.Thread):
 
     Reports to on_event("search", {...}) with a "stage" of:
       "heard"   - transcribed; {"kind"} is "song", "album" or "playlist", {"query"}
-                  what will be searched for
+                  what will be searched for, {"shuffle"} whether to shuffle it
       "playing" - started; {"kind", "title", "artist"} ("artist" is the curator for
                   a playlist, "your library" for the user's own)
       "failed"  - {"error"}
-    A request with nothing after "play" just resumes playback ({"stage": "resumed"}).
+    A request that names nothing is passed to send(): a bare "play" resumes
+    playback, "shuffle" turns shuffle on ({"stage": "resumed", "action", "note"}).
     """
 
-    def __init__(self, on_event, wake=None, send_play=None):
+    def __init__(self, on_event, wake=None, send=None):
         super().__init__(daemon=True)
         self.on_event = on_event
         self.wake = wake
-        self.send_play = send_play  # plain "play" for requests with no song in them
+        # send(action) for requests that name nothing: "play" (resume), "shuffle",
+        # "shuffle off". Returns a note for the console, or None.
+        self.send = send
         self.jobs = queue.Queue()
         self.busy = False
         self._model = None
@@ -157,13 +178,13 @@ class SongSearcher(threading.Thread):
         if self._model is None:
             raise RuntimeError("speech model isn't loaded")
         transcript = self.transcribe(audio_bytes)
-        request = parse_request(transcript, self.wake)
-        if not request:
-            if self.send_play:
-                self.send_play()
-            self.on_event("search", {"stage": "resumed", "transcript": transcript})
+        request = parse_request(transcript, self.wake) or {"action": "play"}
+        if "action" in request:
+            note = self.send(request["action"]) if self.send else None
+            self.on_event("search", {"stage": "resumed", "action": request["action"], "note": note,
+                                     "transcript": transcript})
             return
-        info = {"kind": request["kind"], "query": request["query"]}
+        info = {"kind": request["kind"], "query": request["query"], "shuffle": request["shuffle"]}
         self.on_event("search", {"stage": "heard", "transcript": transcript, **info})
         try:
             kind, title, artist = self._play(request, audio_bytes)
@@ -175,29 +196,36 @@ class SongSearcher(threading.Thread):
 
     def _play(self, request, audio_bytes):
         """Play what was asked for. Returns (kind, title, artist): kind as played,
-        which differs from the request's when "my ..." turns out to be a playlist."""
-        kind, query = request["kind"], request["query"]
+        which differs from the request's when "my ..." turns out to be a playlist,
+        or "shuffle <name>" an album or playlist."""
+        kind, query, shuffle = request["kind"], request["query"], request["shuffle"]
         if kind == "playlist" or "library" in request:
             found = apple_music_ui.play_library_playlist(
-                lambda names: self._pick_playlist(request, names, audio_bytes))
+                lambda names: self._pick_playlist(request, names, audio_bytes), shuffle)
             if found:
                 return ("playlist",) + found
-            if request.get("mine"):
-                raise apple_music_ui.PlayError(f"no playlist called “{query}” in your library")
-        play = {"song": apple_music_ui.play_song, "album": apple_music_ui.play_album,
-                "playlist": apple_music_ui.play_playlist}[kind]
-        return (kind,) + play(query)
+            if request["mine"] and (kind == "playlist" or shuffle):
+                name = request.get("library", query)
+                raise apple_music_ui.PlayError(f"no playlist called “{name}” in your library")
+        if kind == "song" and shuffle:  # a song can't be shuffled: "shuffle Thriller" means the album
+            title, artist, kind = apple_music_ui.play_album_or_playlist(query, shuffle=True)
+            return kind, title, artist
+        if kind == "song":
+            return ("song",) + apple_music_ui.play_song(query)
+        play = {"album": apple_music_ui.play_album, "playlist": apple_music_ui.play_playlist}[kind]
+        return (kind,) + play(query, shuffle)
 
     def _pick_playlist(self, request, names, audio_bytes):
         """Which of the user's playlists (`names`) the request means, or None."""
-        cutoff = MY_PLAYLIST_MATCH if request.get("mine") else PLAYLIST_MATCH
+        wants_playlist = request["kind"] == "playlist" or request["shuffle"]
+        cutoff = MY_PLAYLIST_MATCH if request["mine"] and wants_playlist else PLAYLIST_MATCH
         name = best_playlist(request.get("library", request["query"]), names, cutoff)
-        if name is None and request["kind"] == "playlist":
+        if name is None and wants_playlist:
             # Whisper may not know the name ("Gym" heard as "Jim"); listen again,
             # this time told what the user's playlists are called.
             again = parse_request(self.transcribe(audio_bytes, playlist_prompt(names)), self.wake)
-            if again and again["kind"] == "playlist":
-                name = best_playlist(again["query"], names, cutoff)
+            if again and "kind" in again:
+                name = best_playlist(again.get("library", again["query"]), names, cutoff)
         return name
 
 

@@ -537,7 +537,8 @@ class App:
     def update_hint(self):
         self.hint.configure(text=f"Say “{ASSISTANT}” or “Hey {ASSISTANT}”, then: play, pause,\n"
                                  f"next, previous, “play <song> by <artist>”,\n"
-                                 f"“play the album <album>” or “play my <name> playlist”.\n"
+                                 f"“play the album <album>”, “play my <name> playlist”\n"
+                                 f"or “shuffle <album or playlist>”.\n"
                                  f"Or in one go: “{ASSISTANT}, next”.")
 
     def on_setting_changed(self):
@@ -624,7 +625,7 @@ class App:
             self.write_log(f"Error: {data}", "err")
         elif kind == "heard":
             if data["action"] == "search":
-                self.write_log("Song request heard, working out which song…", "dim")
+                self.write_log("Request heard, working out what to play…", "dim")
             elif data["action"]:
                 note = f"  ({data['note']})" if data["note"] else ""
                 self.write_log(f"“{data['text']}” → {data['action']}{note}", "ok")
@@ -645,16 +646,21 @@ class App:
     def handle_search(self, data):
         stage = data["stage"]
         kind = data.get("kind", "song")
+        shuffled = data.get("shuffle")
         if stage == "heard":
             what = "" if kind == "song" else f"the {kind} "
-            self.write_log(f"Looking up {what}“{data['query']}” in Apple Music…", "dim")
+            how = " to shuffle" if shuffled else ""
+            self.write_log(f"Looking up {what}“{data['query']}” in Apple Music{how}…", "dim")
         elif stage == "playing":
-            what = "" if kind == "song" else f"  ({kind})"
-            self.write_log(f"♪ {data['title']} · {data['artist']}{what}", "ok")
+            what = ", ".join(([] if kind == "song" else [kind]) + (["shuffled"] if shuffled else []))
+            self.write_log(f"♪ {data['title']} · {data['artist']}" + (f"  ({what})" if what else ""), "ok")
             self.show_state("playing")
         elif stage == "resumed":
-            self.write_log("“play” → play", "ok")
-            self.show_state("playing")
+            action = data.get("action", "play")
+            note = f"  ({data['note']})" if data.get("note") else ""
+            self.write_log(f"“{action}” → {action}{note}", "ok")
+            if action == "play":
+                self.show_state("playing")
         elif stage == "failed":
             what = f"“{data['query']}”" if data.get("query") else f"that {kind}"
             self.write_log(f"Couldn't play {what}: {data['error']}", "err")

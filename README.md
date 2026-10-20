@@ -3,7 +3,10 @@
 Control the Apple Music app on Windows with your voice, without switching windows:
 **play**, **pause**, **next**, **previous**, **"play \<song\> by \<artist\>"**,
 **"play the album \<album\>"** and **"play my \<name\> playlist"** (or
-**"play the playlist \<name\>"** for one of Apple Music's).
+**"play the playlist \<name\>"** for one of Apple Music's). Say **"shuffle"** instead
+of "play" (or add "on shuffle") to shuffle an album or playlist; **"shuffle
+\<name\>"** finds your playlist of that name, or else Apple Music's top album or
+playlist. A bare **"shuffle"** / **"shuffle off"** turns shuffle on or off.
 
 Speech recognition runs offline. Commands use [Vosk](https://alphacephei.com/vosk/),
 limited to the command words so it's fast; song requests are transcribed with

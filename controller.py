@@ -56,7 +56,12 @@ PHRASES = {
     "go back": "previous",
     "previous song": "previous",
     "last song": "previous",
+    "shuffle": "shuffle",
+    "shuffle off": "shuffle off",
 }
+# Command words that may be followed by what to play ("play Thriller", "shuffle
+# my Gym playlist"): what follows is recorded for song_search.
+REQUEST_WORDS = {"play", "shuffle"}
 
 # The assistant's name: commands only count after it, so singing along or game
 # audio can't trigger them.
@@ -127,6 +132,8 @@ class AppleMusic:
 
     def send(self, action):
         """Send an action. Returns a short note if something went wrong."""
+        if action in ("shuffle", "shuffle off"):
+            return self._shuffle(action == "shuffle")
         session = self._session()
         if session is None:
             press_media_key(MEDIA_KEYS[action])
@@ -151,6 +158,18 @@ class AppleMusic:
         if not self.loop.run_until_complete(call()):
             return "Apple Music rejected the command"
         return note
+
+    def _shuffle(self, on):
+        # Apple Music doesn't offer shuffle through Windows' media controls, so
+        # this presses its Shuffle button.
+        import apple_music_ui
+        import uiautomation
+        try:
+            with uiautomation.UIAutomationInitializerInThread():
+                changed = apple_music_ui.set_shuffle(on)
+        except apple_music_ui.PlayError as e:
+            return str(e)
+        return None if changed else f"shuffle was already {'on' if on else 'off'}"
 
 
 def press_media_key(vk):
@@ -230,7 +249,7 @@ class Listener(threading.Thread):
         detector = CommandDetector(self.min_conf)
         music = AppleMusic()
         searcher = song_search.SongSearcher(self.on_event, WAKE_WORD,
-                                            send_play=lambda: AppleMusic().send("play"))
+                                            send=lambda action: AppleMusic().send(action))
         searcher.start()
         try:
             self._listen(detector, music, searcher)
@@ -279,8 +298,9 @@ class CommandDetector:
     chunks in a row. Only words heard since the last command count, so lyrics
     recognized earlier in a long utterance can't leak into the next command.
 
-    A bare "play" starts a recording: if more words follow, the result is a
-    "search" action carrying that audio (for Whisper); if not, it's "play".
+    A bare "play" (or "shuffle") starts a recording: if more words follow, the
+    result is a "search" action carrying that audio (for Whisper); if not, it's
+    "play" (or "shuffle").
 
     Commands count only after "Amphion": in one go ("Amphion, next"), or
     Siri-style: the name on its own arms the detector (`armed`) and the next
@@ -379,10 +399,11 @@ class CommandDetector:
                 return None
             if kind == "command":
                 self._armed_until = None
-                if action == "play" and self._bare_play(text) and raw[-1] != "play":
+                word = self._request_word(text)
+                if word and action == PHRASES[word] and raw[-1] != word:
                     # The whole request ended before "play" was caught early;
                     # it's all in the recent audio.
-                    return self._heard_search(b"".join(self._history))
+                    return self._heard_search(b"".join(self._history), word)
             return {"text": text, "conf": conf, "action": action, "early": False}
 
         partial = json.loads(self.rec.PartialResult()).get("partial", "")
@@ -403,20 +424,22 @@ class CommandDetector:
             self._armed_until = self._clock + ARM_WINDOW
             return None
         self._armed_until = None
-        if action == "play" and self._bare_play(text):
+        word = self._request_word(text)
+        if word and action == PHRASES[word]:
             # Could be "resume" or "play <song>": record what follows to find out.
-            self._start_request()
+            self._start_request(word)
             return None
         return {"text": text, "conf": None, "action": action, "early": True}
 
-    def _bare_play(self, text):
-        """True if the command starts with "play" (not "resume"): a song may be named
-        after it. Vosk may force the song's words into command words ("play hey
-        am..."), so anything after "play" still counts; Whisper sorts it out."""
+    def _request_word(self, text):
+        """"play" or "shuffle" if the command starts with it (not "resume"): what to
+        play may be named after it. Vosk may force the song's words into command
+        words ("play hey am..."), so anything after it still counts; Whisper sorts
+        it out."""
         words = text.split()
         if self.wake in words:
             words = words[len(words) - words[::-1].index(self.wake):]
-        return words[:1] == ["play"]
+        return words[0] if words[:1] and words[0] in REQUEST_WORDS else None
 
     def _remember(self, data):
         """Keep the last few seconds of audio."""
@@ -425,8 +448,9 @@ class CommandDetector:
         while self._history_s > REQUEST_MAX + PREROLL and len(self._history) > 1:
             self._history_s -= len(self._history.popleft()) / 2 / SAMPLE_RATE
 
-    def _start_request(self):
-        """Begin recording after a bare "play", with the audio just before it.
+    def _start_request(self, word):
+        """Begin recording after a bare "play" (or "shuffle": `word`), with the audio
+        just before it.
 
         Whether more words follow, and when they stop, is judged by loudness:
         Vosk only knows the command words, so it's slow to report anything else.
@@ -446,7 +470,7 @@ class CommandDetector:
         # The last few seconds can be mostly speech ("Amphion ... play ..."), which
         # puts the "background" near the voice level; keep the threshold below it.
         threshold = max(background + 3.0, min(threshold, voice - VOICE_HEADROOM))
-        self._request = {"audio": preroll, "elapsed": 0.0, "more": False,
+        self._request = {"word": word, "audio": preroll, "elapsed": 0.0, "more": False,
                          "quiet": 0.0, "loud": 0, "threshold": threshold}
 
     def _record(self, data):
@@ -468,11 +492,11 @@ class CommandDetector:
 
         if not r["more"]:
             if r["quiet"] >= PLAY_WAIT:
-                return self._finish_request(ended, {"text": "play", "conf": None,
-                                                    "action": "play", "early": True})
+                return self._finish_request(ended, {"text": r["word"], "conf": None,
+                                                    "action": PHRASES[r["word"]], "early": True})
             return None
         if r["quiet"] >= REQUEST_PAUSE or r["elapsed"] >= REQUEST_MAX:
-            return self._finish_request(ended, self._heard_search(b"".join(r["audio"])))
+            return self._finish_request(ended, self._heard_search(b"".join(r["audio"]), r["word"]))
         return None
 
     def _finish_request(self, ended, heard):
@@ -483,8 +507,8 @@ class CommandDetector:
         self._reset_partial(consumed=0)
         return heard
 
-    def _heard_search(self, audio):
-        return {"text": "play …", "conf": None, "action": "search", "early": True, "audio": audio}
+    def _heard_search(self, audio, word):
+        return {"text": f"{word} …", "conf": None, "action": "search", "early": True, "audio": audio}
 
     def _reset_partial(self, consumed):
         self._consumed, self._last, self._streak = consumed, None, 0

@@ -3,8 +3,8 @@ driving its UI.
 
 Apple Music has no API for "play this song", so this does what a person would:
 search, then choose "Play '<song>'" from the top song's menu, or open the top
-album or playlist and press its Play button. The user's own playlists are opened
-from the sidebar instead. It works through UI Automation (the accessibility interface), so nothing
+album or playlist and press its Play (or Shuffle) button. The user's own
+playlists are opened from the sidebar instead. It works through UI Automation (the accessibility interface), so nothing
 is clicked with the mouse. Apple Music does come to the front while it works
 (setting its search box activates it), so the previously focused window is put
 back afterwards, and a minimized Apple Music is minimized again.
@@ -70,23 +70,36 @@ def play_song(query, timeout=10):
     return _in_apple_music(lambda window: _search_and_play(window, query, timeout))
 
 
-def play_album(query, timeout=10):
-    """Search Apple Music for `query` and play the top album result.
+def play_album(query, shuffle=False, timeout=10):
+    """Search Apple Music for `query` and play (or shuffle) the top album result.
     Returns (title, artist), e.g. ("Thriller", "Michael Jackson")."""
-    return _in_apple_music(lambda window: _play_collection(window, query, "Album", "Albums", timeout))
+    return _in_apple_music(lambda window: _play_collection(window, query, ["Album"], shuffle, timeout)[:2])
 
 
-def play_playlist(query, timeout=10):
-    """Search Apple Music for `query` and play the top playlist result.
+def play_playlist(query, shuffle=False, timeout=10):
+    """Search Apple Music for `query` and play (or shuffle) the top playlist result.
     Returns (title, curator), e.g. ("Today's Hits", "Apple Music Pop")."""
-    return _in_apple_music(lambda window: _play_collection(window, query, "Playlist", "Playlists", timeout))
+    return _in_apple_music(lambda window: _play_collection(window, query, ["Playlist"], shuffle, timeout)[:2])
 
 
-def play_library_playlist(choose, timeout=10):
-    """Play one of the user's own playlists: choose(names) is given their names
-    and returns one of them, or None. Returns (title, "your library"), or None if
-    none was chosen."""
-    return _in_apple_music(lambda window: _play_library_playlist(window, choose, timeout))
+def play_album_or_playlist(query, shuffle=False, timeout=10):
+    """Like play_album, but takes whichever of the top album and playlist results
+    comes first. For "shuffle <name>", which could be either. Returns (title,
+    artist or curator, "album" or "playlist")."""
+    return _in_apple_music(lambda window: _play_collection(window, query, ["Album", "Playlist"],
+                                                           shuffle, timeout))
+
+
+def play_library_playlist(choose, shuffle=False, timeout=10):
+    """Play (or shuffle) one of the user's own playlists: choose(names) is given
+    their names and returns one of them, or None. Returns (title, "your library"),
+    or None if none was chosen."""
+    return _in_apple_music(lambda window: _play_library_playlist(window, choose, shuffle, timeout))
+
+
+def set_shuffle(on):
+    """Turn Apple Music's shuffle on or off. Returns False if it already was."""
+    return _in_apple_music(lambda window: _set_shuffle(window, on))
 
 
 def _in_apple_music(action):
@@ -142,22 +155,45 @@ def _search(window, query, pick, timeout):
     return found
 
 
-def _play_collection(window, query, kind, section, timeout):
-    """Search, open the top `kind` ("Album") result, or else the first in the results'
-    `section` ("Albums"), and press Play on its page."""
-    item = _search(window, query, lambda w: _top_result(w, kind) or _section_first(w, section), timeout)
-    if not item:
-        raise PlayError(f"no {kind.lower()} found for “{query}”")
+def _play_collection(window, query, kinds, shuffle, timeout):
+    """Search, open the top result of one of `kinds` ("Album"), or else the first in
+    the results' section for it ("Albums"), and press Play (or Shuffle) on its page.
+    Returns (title, the line under it, "album" or "playlist")."""
+    def pick(w):
+        tile = _top_result(w, kinds)
+        if tile:
+            return tile, next(k for k in kinds if re.search(rf"\b{k}\s·", tile.Name))
+        return next(((item, k) for k in kinds if (item := _section_first(w, k + "s"))), None)
+
+    what = " or ".join(kinds).lower()
+    found = _search(window, query, pick, timeout)
+    if not found:
+        raise PlayError(f"no {what} found for “{query}”")
+    item, kind = found
     before = _page_id(window)
     item.GetInvokePattern().Invoke()
-    play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, "Play"), timeout)
+    button = "Shuffle" if shuffle else "Play"
+    play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, button), timeout)
     if not play:
         raise PlayError(f"the {kind.lower()}'s page didn't open")
     play.GetInvokePattern().Invoke()
-    return _header_text(window)
+    return _header_text(window) + (kind.lower(),)
 
 
-def _play_library_playlist(window, choose, timeout):
+def _set_shuffle(window, on):
+    # The player bar's button; playlist pages have their own "ShuffleButton" too.
+    bar = find(window, auto.ControlType.GroupControl, automation_id="TransportBar")
+    button = find(bar, auto.ControlType.ButtonControl, automation_id="ShuffleButton") if bar else None
+    if not button:
+        raise PlayError("couldn't find Apple Music's Shuffle button")
+    toggle = button.GetTogglePattern()
+    if bool(toggle.ToggleState) == on:
+        return False
+    toggle.Toggle()
+    return True
+
+
+def _play_library_playlist(window, choose, shuffle, timeout):
     """The user's playlists are listed under "Playlists" in the sidebar, once it's
     expanded. In a narrow window the sidebar is collapsed to icons and won't
     expand, so open it first. Both are put back afterwards."""
@@ -187,7 +223,8 @@ def _play_library_playlist(window, choose, timeout):
             return None
         before = _page_id(window)
         items[name].GetSelectionItemPattern().Select()
-        play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, "Play"), timeout)
+        button = "Shuffle" if shuffle else "Play"
+        play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, button), timeout)
         if not play:
             raise PlayError(f"your playlist “{name}” didn't open")
         play.GetInvokePattern().Invoke()
@@ -267,16 +304,16 @@ def search_box(window):
 
 
 def _top_song(window):
-    return _top_result(window, "Song")
+    return _top_result(window, ["Song"])
 
 
-def _top_result(window, kind):
-    """The first "Top Results" tile of a kind: tiles are named like
+def _top_result(window, kinds):
+    """The first "Top Results" tile of one of `kinds`: tiles are named like
     "Thriller Album · Michael Jackson"."""
     top = find(window, auto.ControlType.ListItemControl, name="Top Results")
     if not top:
         return None
-    label = re.compile(rf"\b{kind}\s·")
+    label = re.compile(rf"\b(?:{'|'.join(kinds)})\s·")
     return next((t for t in _list_items(top, 4) if label.search(t.Name)), None)
 
 
@@ -401,5 +438,7 @@ if __name__ == "__main__":
         play, args = play_album, args[1:]
     elif args[:1] == ["--playlist"]:
         play, args = play_playlist, args[1:]
+    elif args[:1] == ["--shuffle"]:
+        play, args = (lambda query: play_album_or_playlist(query, shuffle=True)), args[1:]
     t = time.monotonic()
     print(play(" ".join(args) or "uptown girl"), f"{time.monotonic() - t:.1f}s")
