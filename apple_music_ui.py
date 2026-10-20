@@ -25,6 +25,9 @@ user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
 user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
 SW_SHOWNOACTIVATE, SW_SHOWMINNOACTIVE = 4, 7
+# uiautomation sleeps 0.5 s after every action unless told otherwise; every
+# action here passes waitTime=0, and the _wait loops wait for what's actually
+# needed instead.
 PLAY_ITEM = re.compile(r"^Play [\"“‘']")  # "Play “Uptown Girl”", not "Play Next" / "Play Last"
 SIDEBAR_OPEN_WIDTH = 100  # sidebar items are ~55 px wide when it's collapsed to icons, ~355 open
 
@@ -140,7 +143,7 @@ def _search(window, query, pick, timeout):
             return found
     # Search, then wait for a new results page (not the one already showing).
     before = _page_id(window)
-    box.GetValuePattern().SetValue(query)
+    box.GetValuePattern().SetValue(query, waitTime=0)
     # Setting the text redraws the box, and for a moment its Search button
     # can't be pressed yet; look it up again until it can.
     query_button = _wait(lambda: getattr(find(window, auto.ControlType.ButtonControl,
@@ -148,7 +151,7 @@ def _search(window, query, pick, timeout):
                                          "GetInvokePattern", lambda: None)(), 2)
     if not query_button:
         raise PlayError("Apple Music's search button didn't respond")
-    query_button.Invoke()
+    query_button.Invoke(waitTime=0)
     found = _wait(lambda: _page_id(window) not in (before, None) and pick(window), timeout)
     if found:
         _last_search = (key, _page_id(window))
@@ -171,12 +174,12 @@ def _play_collection(window, query, kinds, shuffle, timeout):
         raise PlayError(f"no {what} found for “{query}”")
     item, kind = found
     before = _page_id(window)
-    item.GetInvokePattern().Invoke()
+    item.GetInvokePattern().Invoke(waitTime=0)
     button = "Shuffle" if shuffle else "Play"
     play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, button), timeout)
     if not play:
         raise PlayError(f"the {kind.lower()}'s page didn't open")
-    play.GetInvokePattern().Invoke()
+    play.GetInvokePattern().Invoke(waitTime=0)
     return _header_text(window) + (kind.lower(),)
 
 
@@ -189,7 +192,7 @@ def _set_shuffle(window, on):
     toggle = button.GetTogglePattern()
     if bool(toggle.ToggleState) == on:
         return False
-    toggle.Toggle()
+    toggle.Toggle(waitTime=0)
     return True
 
 
@@ -201,17 +204,17 @@ def _play_library_playlist(window, choose, shuffle, timeout):
     if not header:
         raise PlayError("couldn't find Playlists in Apple Music's sidebar")
     expander = header.GetExpandCollapsePattern()
-    expanded = opened = False
+    expanded = opened = chosen = False
     try:
         if header.BoundingRectangle.width() < SIDEBAR_OPEN_WIDTH:
             menu = find(window, auto.ControlType.ButtonControl, automation_id="Hamburger_Button")
             if not menu:
                 raise PlayError("couldn't open Apple Music's sidebar")
-            menu.GetInvokePattern().Invoke()
+            menu.GetInvokePattern().Invoke(waitTime=0)
             opened = True
             _wait(lambda: header.BoundingRectangle.width() >= SIDEBAR_OPEN_WIDTH, 1)
         if expander.ExpandCollapseState == auto.ExpandCollapseState.Collapsed:
-            expander.Expand()
+            expander.Expand(waitTime=0)
             expanded = True
         host = _wait(lambda: _playlist_host(header), 2)
         if not host:
@@ -222,22 +225,24 @@ def _play_library_playlist(window, choose, shuffle, timeout):
         if name is None:
             return None
         before = _page_id(window)
-        items[name].GetSelectionItemPattern().Select()
+        items[name].GetSelectionItemPattern().Select(waitTime=0)
+        chosen = True
         button = "Shuffle" if shuffle else "Play"
         play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, button), timeout)
         if not play:
             raise PlayError(f"your playlist “{name}” didn't open")
-        play.GetInvokePattern().Invoke()
+        play.GetInvokePattern().Invoke(waitTime=0)
         return name, "your library"
     finally:
         if expanded:
-            expander.Collapse()
-        # Choosing a playlist closes a sidebar that was opened over the page; if
-        # none was chosen it's still open.
-        if opened and header.BoundingRectangle.width() >= SIDEBAR_OPEN_WIDTH:
+            expander.Collapse(waitTime=0)
+        # Choosing a playlist closes a sidebar that was opened over the page (give
+        # it a moment to slide shut); if none was chosen it's still open.
+        if opened and not _wait(lambda: header.BoundingRectangle.width() < SIDEBAR_OPEN_WIDTH,
+                                1 if chosen else 0.01):
             menu = find(window, auto.ControlType.ButtonControl, automation_id="Hamburger_Button")
             if menu:
-                menu.GetInvokePattern().Invoke()
+                menu.GetInvokePattern().Invoke(waitTime=0)
 
 
 def _playlist_host(header):
@@ -258,7 +263,7 @@ def _search_and_play(window, query, timeout):
     if not row:
         # Otherwise open the song's album and use its track row.
         before = _page_id(window)
-        tile.GetInvokePattern().Invoke()
+        tile.GetInvokePattern().Invoke(waitTime=0)
         row = _wait(lambda: _page_id(window) not in (before, None) and _track_row(window, title), timeout)
         if not row:
             raise PlayError(f"couldn't find “{title}” on its album page")
@@ -269,16 +274,16 @@ def _search_and_play(window, query, timeout):
 def _play_from_menu(window, row):
     """Choose "Play '<title>'" from a song row's "More" menu. The button only
     exists on screen once the row is scrolled into view."""
-    row.GetScrollItemPattern().ScrollIntoView()
+    row.GetScrollItemPattern().ScrollIntoView(waitTime=0)
     more = _wait(lambda: (lambda b: b if b and b.BoundingRectangle.width() > 0 else None)(
         find(row, auto.ControlType.ButtonControl, name="More")), 2)
     if not more:
         raise PlayError("the song's menu button didn't appear")
-    more.GetInvokePattern().Invoke()
+    more.GetInvokePattern().Invoke(waitTime=0)
     item = _wait(lambda: _play_menu_item(window), 3)
     if not item:
         raise PlayError("the song's menu didn't open")
-    item.GetInvokePattern().Invoke()
+    item.GetInvokePattern().Invoke(waitTime=0)
 
 
 def _songs_row(window, title, artist):
@@ -299,7 +304,7 @@ def search_box(window):
     button = find(window, auto.ControlType.ButtonControl, automation_id="Search_Button")
     if not button:
         return None
-    button.GetInvokePattern().Invoke()
+    button.GetInvokePattern().Invoke(waitTime=0)
     return _wait(lambda: find(window, auto.ControlType.EditControl, automation_id="TextBox"), 2)
 
 
