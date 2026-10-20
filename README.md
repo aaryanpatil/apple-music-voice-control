@@ -1,4 +1,4 @@
-# Apple Music Voice Control
+# Amphion - Voice Control for Apple Music
 
 Control the Apple Music app on Windows with your voice, without switching windows:
 **play**, **pause**, **next**, **previous**, **"play \<song\> by \<artist\>"**,

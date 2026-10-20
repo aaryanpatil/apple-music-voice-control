@@ -294,7 +294,7 @@ class App:
         self.am_state = None  # "closed" / "playing" / "paused"
         self.shuffle_on = False
 
-        root.title("Voice Control")
+        root.title(ASSISTANT)
         if ICON_FILE.exists():
             root.iconbitmap(str(ICON_FILE))
         root.configure(fg_color=BG)
@@ -344,9 +344,9 @@ class App:
         header.pack(fill="x")
         titles = ctk.CTkFrame(header, fg_color=BG)
         titles.pack(side="left")
-        ctk.CTkLabel(titles, text="Voice Control", text_color=INK,
+        ctk.CTkLabel(titles, text=ASSISTANT, text_color=INK,
                      font=ctk.CTkFont(family=SERIF, size=26)).pack(anchor="w")
-        ctk.CTkLabel(titles, text="for Apple Music", text_color=MUTED,
+        ctk.CTkLabel(titles, text="Voice Control for Apple Music", text_color=MUTED,
                      font=font(13)).pack(anchor="w", pady=(0, 0))
         # Status pill: one rounded label, with the dot as an image (a text "●" sits on
         # the baseline, off-centre; separate widgets showed seams).
@@ -967,8 +967,8 @@ def report_crash():
         log.write_text(traceback.format_exc())
     except OSError:
         pass
-    message = f"Voice Control hit an error and has to close.\n\nDetails were saved to:\n{log}"
-    ctypes.windll.user32.MessageBoxW(None, message, "Voice Control", 0x10)
+    message = f"{ASSISTANT} hit an error and has to close.\n\nDetails were saved to:\n{log}"
+    ctypes.windll.user32.MessageBoxW(None, message, ASSISTANT, 0x10)
 
 
 if __name__ == "__main__":

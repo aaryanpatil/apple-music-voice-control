@@ -10,7 +10,7 @@ models/
 build/
 dist/
 
-# Personal settings (mic, wake word, ...)
+# Personal settings (mic, strictness, night mode, ...)
 settings.json
 
 # uiautomation's log
