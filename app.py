@@ -32,8 +32,8 @@ DEFAULT_MIC = "System default"
 # The console is the one flexible piece: at least CONSOLE_MIN_H tall, opening at
 # CONSOLE_MIN_H + CONSOLE_EXTRA_H, and growing to fill a taller window.
 CONSOLE_MIN_H, CONSOLE_EXTRA_H = 60, 60
-NO_WAKE = "None (always listening)"
-DEFAULTS = {"mic": DEFAULT_MIC, "wake": "amphion", "min_conf": 0.6, "autostart": False,
+ASSISTANT = controller.WAKE_WORD.title()  # "Amphion"
+DEFAULTS = {"mic": DEFAULT_MIC, "min_conf": 0.6, "autostart": False,
             "console": True, "night": False}
 
 # Palette as (light, dark) pairs; CustomTkinter picks one by appearance mode.
@@ -395,11 +395,6 @@ class App:
                         font=ctk.CTkFont(family=ICON_FONT, size=13),
                         command=self.refresh_mics).grid(row=1, column=1, padx=(6, 0))
 
-        self.section(inner, "Wake word", 2)
-        self.wake_var = tk.StringVar(value=self.settings["wake"] or NO_WAKE)
-        self.menu(inner, self.wake_var, [NO_WAKE] + controller.WAKE_WORDS,
-                  lambda v: self.on_setting_changed()).grid(row=3, column=0, columnspan=2, sticky="ew")
-
         self.section(inner, "Strictness", 4)
         self.conf_value = ctk.CTkLabel(inner, text="", text_color=MUTED, font=font(12))
         self.conf_value.grid(row=4, column=1, sticky="e", pady=(10, 4))
@@ -539,24 +534,15 @@ class App:
         name = self.mic_var.get()
         return next((i for i, n in self.mics if n == name), None)
 
-    def selected_wake(self):
-        w = self.wake_var.get()
-        return None if w == NO_WAKE else w
-
     def update_hint(self):
-        w = (self.selected_wake() or "").title()
-        if w:
-            self.hint.configure(text=f"Say “{w}”, then: play, pause, next, previous\n"
-                                     f"or “play <song> by <artist>”. Or in one go: “{w}, next”.")
-        else:
-            self.hint.configure(text="Always listening for play, pause, next, previous and\n"
-                                     "“play <song> by <artist>”. Singing along or game audio\n"
-                                     "can set it off; a wake word avoids that.")
+        self.hint.configure(text=f"Say “{ASSISTANT}” or “Hey {ASSISTANT}”, then: play, pause,\n"
+                                 f"next, previous or “play <song> by <artist>”.\n"
+                                 f"Or in one go: “{ASSISTANT}, next”.")
 
     def on_setting_changed(self):
         self.update_hint()
         self.save()
-        if self.listener:  # mic and wake word need a fresh listener
+        if self.listener:  # a new mic needs a fresh listener
             self.stop()
             self.start()
 
@@ -569,7 +555,7 @@ class App:
             self.save()
 
     def save(self):
-        self.settings = {"mic": self.mic_var.get(), "wake": self.selected_wake(),
+        self.settings = {"mic": self.mic_var.get(),
                          "min_conf": round(self.conf_var.get(), 2),
                          "autostart": self.auto_var.get(),
                          "console": self.console_var.get(),
@@ -590,8 +576,7 @@ class App:
         self.set_button("Starting…", FIELD, FIELD_HOVER, text_color=INK)
         self.listener = controller.Listener(
             lambda kind, data: self.events.put((kind, data)),
-            device=self.selected_device(), wake=self.selected_wake(),
-            min_conf=round(self.conf_var.get(), 2))
+            device=self.selected_device(), min_conf=round(self.conf_var.get(), 2))
         self.listener.start()
 
     def stop(self):
@@ -650,9 +635,8 @@ class App:
         elif kind == "search":
             self.handle_search(data)
         elif kind == "wake" and self.listener:
-            if data:  # heard the wake word on its own: listening for a command
-                name = (self.selected_wake() or "").title()
-                self.set_button(f"{name} is listening…", LAVENDER, LAVENDER_HOVER)
+            if data:  # heard "Amphion" on its own: listening for a command
+                self.set_button(f"{ASSISTANT} is listening…", LAVENDER, LAVENDER_HOVER)
                 play_chime()
             else:
                 self.set_button("Listening · tap to stop", MINT, MINT_HOVER)
@@ -863,10 +847,11 @@ def selftest(root, out_path):
                                         Name="Apple Music")
             if not window.Exists(1):
                 return "Apple Music not open; skipped"
-            box = apple_music_ui.find(window, auto.ControlType.EditControl, automation_id="TextBox")
-            if not box:
-                raise RuntimeError("couldn't find Apple Music's search box")
-            return "found Apple Music's search box"
+            # Either the search box, or the button that shows it in a narrow window.
+            for automation_id, what in (("TextBox", "search box"), ("Search_Button", "search button")):
+                if apple_music_ui.find(window, None, automation_id=automation_id):
+                    return f"found Apple Music's {what}"
+            raise RuntimeError("couldn't find Apple Music's search box or button")
 
     def mics():
         names = [n for _, n in controller.list_microphones()]

@@ -6,9 +6,11 @@ needs focus. Falls back to global media keys if no session is found.
 "play <song> [by <artist>]" is recorded and handed to song_search, which
 transcribes it (offline, Whisper) and plays that song.
 
+Every command starts with the assistant's name, Amphion: "Amphion, next", or
+"Hey Amphion" ... "pause".
+
 The UI lives in app.py. This file can also run on its own from a terminal:
-    python controller.py                 # say "play", "pause", "next", "previous"
-    python controller.py --wake jarvis   # require a wake word: "jarvis next"
+    python controller.py
 """
 
 import argparse
@@ -56,15 +58,16 @@ PHRASES = {
     "last song": "previous",
 }
 
-# Wake words offered in the UI, Amphion (the assistant's name) first. All are
-# distinct from the command words and rare in lyrics.
-WAKE_WORDS = ["amphion", "apollo", "jarvis", "computer", "maestro", "player", "radio", "assistant"]
+# The assistant's name: commands only count after it, so singing along or game
+# audio can't trigger them.
+WAKE_WORD = "amphion"
 
-# How Vosk should listen for wake words that aren't in its vocabulary: as
-# sequences of words it knows that sound the same. "Amphion" (am-fee-on,
-# am-feh-on, am-fe-uhn) is heard reliably as either of these; spellings ending
-# in "un"/"an" also matched "I am free and I am on ..." in lyrics.
-WAKE_SOUNDS = {"amphion": ["am phi on", "am fe on"]}
+# "Amphion" isn't in Vosk's vocabulary, so it listens for words it knows that
+# sound the same. "am phi on" caught am-fee-on, am-feh-on and am-fe-uhn (60/60
+# test clips) with no false wakes on lyrics; adding "am fe on" also matched
+# "I'm feeling ..." (up to 20% of lines), and "... un"/"... an" spellings matched
+# "I am free and I am on".
+WAKE_SOUNDS = ["am phi on"]
 
 # After the wake word on its own ("Amphion"), how long a command is listened for.
 ARM_WINDOW = 5.0
@@ -156,12 +159,9 @@ def press_media_key(vk):
     ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
 
-def parse(text, wake):
+def parse(text):
+    """The action for command words like "next song", or None."""
     words = text.split()
-    if wake:
-        if wake not in words:
-            return None
-        words = words[words.index(wake) + 1 :]
     phrase = " ".join(words)
     if phrase in PHRASES:
         return PHRASES[phrase]
@@ -202,16 +202,15 @@ class Listener(threading.Thread):
       ("heard", {"text", "conf", "action", "note"})
       ("search", {"stage", ...})  - a "play <song>" request; see song_search
       ("wake", bool)              - started / stopped listening for a command
-                                    after hearing the wake word on its own
-    action is None when speech was heard but ignored (no wake word, low
+                                    after hearing "Amphion" on its own
+    action is None when speech was heard but ignored (no "Amphion", low
     confidence, not a command).
     """
 
-    def __init__(self, on_event, device=None, wake=None, min_conf=0.6):
+    def __init__(self, on_event, device=None, min_conf=0.6):
         super().__init__(daemon=True)
         self.on_event = on_event
         self.device = device
-        self.wake = wake.lower() if wake else None
         self.min_conf = min_conf  # read live, may be changed while running
         self._stop_event = threading.Event()
 
@@ -228,9 +227,9 @@ class Listener(threading.Thread):
 
     def _run(self):
         import song_search  # loads Whisper's libraries; only needed once listening
-        detector = CommandDetector(self.wake, self.min_conf)
+        detector = CommandDetector(self.min_conf)
         music = AppleMusic()
-        searcher = song_search.SongSearcher(self.on_event, self.wake,
+        searcher = song_search.SongSearcher(self.on_event, WAKE_WORD,
                                             send_play=lambda: AppleMusic().send("play"))
         searcher.start()
         try:
@@ -283,19 +282,19 @@ class CommandDetector:
     A bare "play" starts a recording: if more words follow, the result is a
     "search" action carrying that audio (for Whisper); if not, it's "play".
 
-    With a wake word, commands count only after it: in one go ("apollo next"),
-    or Siri-style: the wake word on its own arms the detector (`armed`) and the
-    next command within ARM_WINDOW seconds counts without repeating it.
+    Commands count only after "Amphion": in one go ("Amphion, next"), or
+    Siri-style: the name on its own arms the detector (`armed`) and the next
+    command within ARM_WINDOW seconds counts without repeating it.
     """
 
-    def __init__(self, wake=None, min_conf=0.6):
-        self.wake = wake.lower() if wake else None
+    def __init__(self, min_conf=0.6):
+        self.wake = WAKE_WORD
         self.min_conf = min_conf
-        self._sounds = [s.split() for s in WAKE_SOUNDS.get(self.wake, [self.wake])] if self.wake else []
+        self._sounds = [s.split() for s in WAKE_SOUNDS]
         vocab = set(PHRASES)
         # "Hey Amphion" needs no entry: "hey" comes through as [unk], which is skipped.
         # (Listing it made "Hotel" sound like "hey am...".)
-        for sound in WAKE_SOUNDS.get(self.wake, [self.wake]) if self.wake else []:
+        for sound in WAKE_SOUNDS:
             vocab |= {sound} | {f"{sound} {p}" for p in PHRASES}
         self.rec = KaldiRecognizer(load_model(), SAMPLE_RATE,
                                    json.dumps(sorted(vocab) + ["[unk]"]))
@@ -335,18 +334,17 @@ class CommandDetector:
         command that counts (after the wake word, or while armed), else (None, None).
         items are (word, confidence or None) pairs."""
         words = [w for w, _ in items]
-        if self.wake:
-            if self.wake in words:
-                last = len(words) - 1 - words[::-1].index(self.wake)
-                conf = items[last][1]
-                if conf is not None and conf < WAKE_CONF:
-                    return None, None  # a shaky match, like "I'm feeling" in a chorus
-                words = words[last + 1:]
-                if not words:
-                    return "wake", None
-            elif not self.armed:
-                return None, None
-        action = parse(" ".join(words), None) if words else None
+        if self.wake in words:
+            last = len(words) - 1 - words[::-1].index(self.wake)
+            conf = items[last][1]
+            if conf is not None and conf < WAKE_CONF:
+                return None, None  # a shaky match, like "I'm feeling" in a chorus
+            words = words[last + 1:]
+            if not words:
+                return "wake", None
+        elif not self.armed:
+            return None, None
+        action = parse(" ".join(words)) if words else None
         return ("command", action) if action else (None, None)
 
     def stable_chunks(self):
@@ -416,7 +414,7 @@ class CommandDetector:
         after it. Vosk may force the song's words into command words ("play hey
         am..."), so anything after "play" still counts; Whisper sorts it out."""
         words = text.split()
-        if self.wake and self.wake in words:
+        if self.wake in words:
             words = words[len(words) - words[::-1].index(self.wake):]
         return words[:1] == ["play"]
 
@@ -509,7 +507,6 @@ def _level(data):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--wake", help="wake word required before each command, e.g. 'jarvis'")
     ap.add_argument("--min-conf", type=float, default=0.6,
                     help="minimum average word confidence (0-1), default 0.6")
     ap.add_argument("--device", type=int, help="input device index (see --list-mics)")
@@ -532,8 +529,10 @@ def main():
             print(f"heard '{data['text']}' ({conf}) -> {data['action']}{extra}")
         elif kind == "search":
             print(f"song request: {data}")
+        elif kind == "wake":
+            print("[Amphion is listening]" if data else "[stopped listening]")
 
-    listener = Listener(on_event, args.device, args.wake, args.min_conf)
+    listener = Listener(on_event, args.device, args.min_conf)
     listener.start()
     try:
         while listener.is_alive():
