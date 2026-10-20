@@ -7,6 +7,7 @@ import math
 import os
 import queue
 import sys
+import threading
 import time
 import tempfile
 import tkinter as tk
@@ -59,7 +60,7 @@ SLIDER_KNOB, SLIDER_KNOB_HOVER = ("#B5A2E8", "#C2B2EE"), ("#A590E0", "#B3A1E8")
 SANS, SANS_BOLD, SERIF = "DM Sans", "DM Sans SemiBold", "Source Serif 4 SemiBold"
 ICON_FONT = "Segoe Fluent Icons"
 ICONS = {"previous": "", "play": "", "pause": "",
-         "next": "", "refresh": "", "chevron": ""}
+         "next": "", "shuffle": "", "refresh": "", "chevron": ""}
 
 
 class Window(ctk.CTk):
@@ -291,6 +292,7 @@ class App:
         self.mics = []
         self.error = False
         self.am_state = None  # "closed" / "playing" / "paused"
+        self.shuffle_on = False
 
         root.title("Voice Control")
         if ICON_FILE.exists():
@@ -308,6 +310,7 @@ class App:
 
         root.after(50, self.poll)
         root.after(300, self.check_apple_music)
+        threading.Thread(target=self.watch_shuffle, daemon=True).start()
         if self.settings["autostart"]:
             root.after(200, self.start)
 
@@ -366,19 +369,26 @@ class App:
                                  wraplength=320, justify="center")
         self.hint.pack(padx=18, pady=(10, 16))
 
-        # Transport buttons; play/pause is one button showing what a press will do
+        # Transport buttons; play/pause is one button showing what a press will do.
+        # Shuffle is lit (lavender) while Apple Music's shuffle is on; an empty slot
+        # the same size on the right keeps play/pause centred.
         row = ctk.CTkFrame(outer, fg_color=BG)
         row.pack(pady=(14, 0))
-        self.play_btn = None
-        for action, size in (("previous", 56), ("toggle", 68), ("next", 56)):
+        self.play_btn = self.shuffle_btn = None
+        for action, size in (("shuffle", 44), ("previous", 56), ("toggle", 68), ("next", 56), (None, 44)):
+            if action is None:
+                ctk.CTkFrame(row, width=size, height=size, fg_color=BG).pack(side="left", padx=9)
+                continue
             btn = RoundIconButton(row, text=ICONS.get(action, ICONS["play"]), width=size,
                                   height=size, corner_radius=size // 2,
                                   fg_color=BLUSH, hover_color=BLUSH_HOVER, text_color=BLUSH_ICON,
-                                  font=ctk.CTkFont(family=ICON_FONT, size=18 if size == 56 else 22),
+                                  font=ctk.CTkFont(family=ICON_FONT, size={44: 15, 56: 18, 68: 22}[size]),
                                   command=lambda a=action: self.manual(a))
             btn.pack(side="left", padx=9)
             if action == "toggle":
                 self.play_btn = btn
+            elif action == "shuffle":
+                self.shuffle_btn = btn
 
         # Settings card
         card = self.card(outer, pady=(14, 0))
@@ -636,6 +646,11 @@ class App:
                 self.write_log(f"“{data['text']}” ignored" + (f" ({why})" if why else ""), "dim")
         elif kind == "search":
             self.handle_search(data)
+        elif kind == "shuffle":
+            self.show_shuffle(data)
+        elif kind == "button":  # a button press handled off the UI thread
+            action, note, tag = data
+            self.write_log(note if tag == "err" else f"Button → {action}" + (f"  ({note})" if note else ""), tag)
         elif kind == "wake" and self.listener:
             if data:  # heard "Amphion" on its own: listening for a command
                 self.set_button(f"{ASSISTANT} is listening…", LAVENDER, LAVENDER_HOVER)
@@ -670,6 +685,9 @@ class App:
     def manual(self, action):
         if action == "toggle":
             action = "pause" if self.am_state == "playing" else "play"
+        elif action == "shuffle":
+            self.toggle_shuffle()
+            return
         try:
             self.music = self.music or controller.AppleMusic()
             note = self.music.send(action)
@@ -680,6 +698,49 @@ class App:
         if action in ("play", "pause"):
             # Flip the icon right away; the next state check confirms it.
             self.show_state("playing" if action == "play" else "paused")
+
+    def toggle_shuffle(self):
+        # Pressing Apple Music's Shuffle button takes a moment (~0.4 s), so it's done
+        # off the UI thread. The button flips right away; watch_shuffle corrects it
+        # if the press didn't take.
+        action = "shuffle off" if self.shuffle_on else "shuffle"
+        self.show_shuffle(action == "shuffle")
+
+        def press():
+            try:
+                note = controller.AppleMusic.send_shuffle(action)
+                self.events.put(("button", (action, note, "ok")))
+            except Exception as e:
+                self.events.put(("button", (action, f"Error: {e}", "err")))
+        threading.Thread(target=press, daemon=True).start()
+
+    def watch_shuffle(self):
+        """Background thread: reports Apple Music's shuffle state as ("shuffle",
+        True/False/None) whenever it changes, whatever changed it (this app, a voice
+        command, or a click in Apple Music). Windows' media controls don't report
+        it, so it's read from Apple Music's Shuffle button, off the UI thread since
+        that can take a moment."""
+        import apple_music_ui
+        import uiautomation
+        last = "unknown"
+        with uiautomation.UIAutomationInitializerInThread():
+            while True:
+                try:
+                    state = apple_music_ui.shuffle_state()
+                except Exception:
+                    state = None
+                if state != last:
+                    self.events.put(("shuffle", state))
+                    last = state
+                time.sleep(1)
+
+    def show_shuffle(self, on):
+        """Light the shuffle button while shuffle is on (on is None if unknown)."""
+        self.shuffle_on = bool(on)
+        if self.shuffle_on:
+            self.shuffle_btn.configure(fg_color=LAVENDER, hover_color=LAVENDER_HOVER, text_color=ON_PASTEL)
+        else:
+            self.shuffle_btn.configure(fg_color=BLUSH, hover_color=BLUSH_HOVER, text_color=BLUSH_ICON)
 
     def check_apple_music(self):
         try:

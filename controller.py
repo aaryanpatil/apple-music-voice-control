@@ -133,7 +133,7 @@ class AppleMusic:
     def send(self, action):
         """Send an action. Returns a short note if something went wrong."""
         if action in ("shuffle", "shuffle off"):
-            return self._shuffle(action == "shuffle")
+            return self.send_shuffle(action)
         session = self._session()
         if session is None:
             press_media_key(MEDIA_KEYS[action])
@@ -159,9 +159,12 @@ class AppleMusic:
             return "Apple Music rejected the command"
         return note
 
-    def _shuffle(self, on):
-        # Apple Music doesn't offer shuffle through Windows' media controls, so
-        # this presses its Shuffle button.
+    @staticmethod
+    def send_shuffle(action):
+        """"shuffle" or "shuffle off"; usable from any thread. Apple Music doesn't
+        offer shuffle through Windows' media controls, so this presses its Shuffle
+        button. Returns a short note if it didn't change anything."""
+        on = action == "shuffle"
         import apple_music_ui
         import uiautomation
         try:

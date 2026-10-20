@@ -105,11 +105,17 @@ def set_shuffle(on):
     return _in_apple_music(lambda window: _set_shuffle(window, on))
 
 
-def _in_apple_music(action):
-    """Run action(window) on Apple Music's window, then put the user's window back."""
+def apple_music_window(wait=0):
+    """Apple Music's main window, or None if it isn't open (after `wait` seconds)."""
     window = auto.WindowControl(searchDepth=1, ClassName="WinUIDesktopWin32WindowClass",
                                 Name="Apple Music")
-    if not window.Exists(1):
+    return window if window.Exists(wait) else None
+
+
+def _in_apple_music(action):
+    """Run action(window) on Apple Music's window, then put the user's window back."""
+    window = apple_music_window(wait=1)
+    if not window:
         raise PlayError("Apple Music isn't open")
     hwnd = window.NativeWindowHandle
     previous = user32.GetForegroundWindow()
@@ -183,10 +189,22 @@ def _play_collection(window, query, kinds, shuffle, timeout):
     return _header_text(window) + (kind.lower(),)
 
 
-def _set_shuffle(window, on):
+def shuffle_state():
+    """Whether Apple Music's shuffle is on: True/False, or None if it isn't open.
+    Only reads it, so Apple Music isn't brought forward."""
+    window = apple_music_window()
+    button = _shuffle_button(window) if window else None
+    return bool(button.GetTogglePattern().ToggleState) if button else None
+
+
+def _shuffle_button(window):
     # The player bar's button; playlist pages have their own "ShuffleButton" too.
     bar = find(window, auto.ControlType.GroupControl, automation_id="TransportBar")
-    button = find(bar, auto.ControlType.ButtonControl, automation_id="ShuffleButton") if bar else None
+    return find(bar, auto.ControlType.ButtonControl, automation_id="ShuffleButton") if bar else None
+
+
+def _set_shuffle(window, on):
+    button = _shuffle_button(window)
     if not button:
         raise PlayError("couldn't find Apple Music's Shuffle button")
     toggle = button.GetTogglePattern()
