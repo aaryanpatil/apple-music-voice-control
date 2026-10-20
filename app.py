@@ -536,8 +536,8 @@ class App:
 
     def update_hint(self):
         self.hint.configure(text=f"Say “{ASSISTANT}” or “Hey {ASSISTANT}”, then: play, pause,\n"
-                                 f"next, previous, “play <song> by <artist>”\n"
-                                 f"or “play the album <album>”.\n"
+                                 f"next, previous, “play <song> by <artist>”,\n"
+                                 f"“play the album <album>” or “play my <name> playlist”.\n"
                                  f"Or in one go: “{ASSISTANT}, next”.")
 
     def on_setting_changed(self):

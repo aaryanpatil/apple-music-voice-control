@@ -1,8 +1,10 @@
-"""Plays a specific song or album in the Apple Music Windows app by driving its UI.
+"""Plays a specific song, album or playlist in the Apple Music Windows app by
+driving its UI.
 
 Apple Music has no API for "play this song", so this does what a person would:
 search, then choose "Play '<song>'" from the top song's menu, or open the top
-album and press its Play button. It works through UI Automation (the accessibility interface), so nothing
+album or playlist and press its Play button. The user's own playlists are opened
+from the sidebar instead. It works through UI Automation (the accessibility interface), so nothing
 is clicked with the mouse. Apple Music does come to the front while it works
 (setting its search box activates it), so the previously focused window is put
 back afterwards, and a minimized Apple Music is minimized again.
@@ -24,6 +26,7 @@ user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
 SW_SHOWNOACTIVATE, SW_SHOWMINNOACTIVE = 4, 7
 PLAY_ITEM = re.compile(r"^Play [\"“‘']")  # "Play “Uptown Girl”", not "Play Next" / "Play Last"
+SIDEBAR_OPEN_WIDTH = 100  # sidebar items are ~55 px wide when it's collapsed to icons, ~355 open
 
 
 TREE_SCOPE_DESCENDANTS = 4
@@ -71,6 +74,19 @@ def play_album(query, timeout=10):
     """Search Apple Music for `query` and play the top album result.
     Returns (title, artist), e.g. ("Thriller", "Michael Jackson")."""
     return _in_apple_music(lambda window: _play_collection(window, query, "Album", "Albums", timeout))
+
+
+def play_playlist(query, timeout=10):
+    """Search Apple Music for `query` and play the top playlist result.
+    Returns (title, curator), e.g. ("Today's Hits", "Apple Music Pop")."""
+    return _in_apple_music(lambda window: _play_collection(window, query, "Playlist", "Playlists", timeout))
+
+
+def play_library_playlist(choose, timeout=10):
+    """Play one of the user's own playlists: choose(names) is given their names
+    and returns one of them, or None. Returns (title, "your library"), or None if
+    none was chosen."""
+    return _in_apple_music(lambda window: _play_library_playlist(window, choose, timeout))
 
 
 def _in_apple_music(action):
@@ -139,6 +155,58 @@ def _play_collection(window, query, kind, section, timeout):
         raise PlayError(f"the {kind.lower()}'s page didn't open")
     play.GetInvokePattern().Invoke()
     return _header_text(window)
+
+
+def _play_library_playlist(window, choose, timeout):
+    """The user's playlists are listed under "Playlists" in the sidebar, once it's
+    expanded. In a narrow window the sidebar is collapsed to icons and won't
+    expand, so open it first. Both are put back afterwards."""
+    header = find(window, auto.ControlType.ListItemControl, automation_id="Sidebar_Header_Playlists")
+    if not header:
+        raise PlayError("couldn't find Playlists in Apple Music's sidebar")
+    expander = header.GetExpandCollapsePattern()
+    expanded = opened = False
+    try:
+        if header.BoundingRectangle.width() < SIDEBAR_OPEN_WIDTH:
+            menu = find(window, auto.ControlType.ButtonControl, automation_id="Hamburger_Button")
+            if not menu:
+                raise PlayError("couldn't open Apple Music's sidebar")
+            menu.GetInvokePattern().Invoke()
+            opened = True
+            _wait(lambda: header.BoundingRectangle.width() >= SIDEBAR_OPEN_WIDTH, 1)
+        if expander.ExpandCollapseState == auto.ExpandCollapseState.Collapsed:
+            expander.Expand()
+            expanded = True
+        host = _wait(lambda: _playlist_host(header), 2)
+        if not host:
+            raise PlayError("couldn't list your playlists")
+        items = {item.Name.strip(): item for item in host.GetChildren()
+                 if item.ControlTypeName == "ListItemControl" and item.AutomationId != "Sidebar_AllPlaylists"}
+        name = choose(list(items))
+        if name is None:
+            return None
+        before = _page_id(window)
+        items[name].GetSelectionItemPattern().Select()
+        play = _wait(lambda: _page_id(window) not in (before, None) and _header_button(window, "Play"), timeout)
+        if not play:
+            raise PlayError(f"your playlist “{name}” didn't open")
+        play.GetInvokePattern().Invoke()
+        return name, "your library"
+    finally:
+        if expanded:
+            expander.Collapse()
+        # Choosing a playlist closes a sidebar that was opened over the page; if
+        # none was chosen it's still open.
+        if opened and header.BoundingRectangle.width() >= SIDEBAR_OPEN_WIDTH:
+            menu = find(window, auto.ControlType.ButtonControl, automation_id="Hamburger_Button")
+            if menu:
+                menu.GetInvokePattern().Invoke()
+
+
+def _playlist_host(header):
+    """The list of playlists under the sidebar's Playlists header, while it shows."""
+    host = find(header, auto.ControlType.GroupControl, automation_id="NavigationViewItemMenuItemsHost")
+    return host if host and host.BoundingRectangle.width() > 0 else None
 
 
 def _search_and_play(window, query, timeout):
@@ -331,5 +399,7 @@ if __name__ == "__main__":
     play = play_song
     if args[:1] == ["--album"]:
         play, args = play_album, args[1:]
+    elif args[:1] == ["--playlist"]:
+        play, args = play_playlist, args[1:]
     t = time.monotonic()
     print(play(" ".join(args) or "uptown girl"), f"{time.monotonic() - t:.1f}s")

@@ -1,8 +1,9 @@
 # Apple Music Voice Control
 
 Control the Apple Music app on Windows with your voice, without switching windows:
-**play**, **pause**, **next**, **previous**, **"play \<song\> by \<artist\>"** and
-**"play the album \<album\>"**.
+**play**, **pause**, **next**, **previous**, **"play \<song\> by \<artist\>"**,
+**"play the album \<album\>"** and **"play my \<name\> playlist"** (or
+**"play the playlist \<name\>"** for one of Apple Music's).
 
 Speech recognition runs offline. Commands use [Vosk](https://alphacephei.com/vosk/),
 limited to the command words so it's fast; song requests are transcribed with
@@ -41,13 +42,16 @@ command, or say it in one go: "Amphion, next".
 | `app.py` | The window: settings, playback buttons, console, night mode |
 | `controller.py` | Microphone → command recognition; play/pause/next/previous through Windows' media controls |
 | `song_search.py` | Transcribes "play …" requests with Whisper and works out what to search for |
-| `apple_music_ui.py` | Plays a specific song or album by driving Apple Music's search through UI Automation |
+| `apple_music_ui.py` | Plays a specific song, album or playlist by driving Apple Music through UI Automation |
 | `make_icon.py` | Draws the app icon into `assets/` |
 
 Playing a specific song: Apple Music has no API for that, so `apple_music_ui.py`
 types the request into Apple Music's search, then chooses "Play '…'" from the top
 song's menu (for an album: opens the top album and presses its Play button).
-Apple Music comes to the front for a few seconds while it does this;
+Your own playlists are opened from the sidebar instead, matching the spoken name
+loosely ("current obsession" finds "Current obssession"); a playlist request
+without "my" plays yours if the name matches closely, else Apple Music's top
+playlist. Apple Music comes to the front for a few seconds while it does this;
 focus is then returned to the window you were using.
 
 ## Build the exe
