@@ -12,3 +12,6 @@ dist/
 
 # Personal settings (mic, wake word, ...)
 settings.json
+
+# uiautomation's log
+@AutomationLog.txt

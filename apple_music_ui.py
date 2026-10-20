@@ -86,7 +86,7 @@ def play_song(query, timeout=10):
 
 def _search_and_play(window, query, timeout):
     global _last_search
-    box = find(window, auto.ControlType.EditControl, automation_id="TextBox")
+    box = search_box(window)
     if not box:
         raise PlayError("couldn't find Apple Music's search box")
     # If our last search for this exact text is still on screen, use its results:
@@ -151,6 +151,19 @@ def _songs_row(window, title, artist):
     if not section:
         return None
     return find(section, auto.ControlType.ListItemControl, name=f"{title} {artist}")
+
+
+def search_box(window):
+    """Apple Music's search box. In a narrow window the sidebar collapses and the
+    box is replaced by a "Click to search" button, which brings it back."""
+    box = find(window, auto.ControlType.EditControl, automation_id="TextBox")
+    if box:
+        return box
+    button = find(window, auto.ControlType.ButtonControl, automation_id="Search_Button")
+    if not button:
+        return None
+    button.GetInvokePattern().Invoke()
+    return _wait(lambda: find(window, auto.ControlType.EditControl, automation_id="TextBox"), 2)
 
 
 def _top_song(window):
